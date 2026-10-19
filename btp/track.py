@@ -226,6 +226,7 @@ def main():
     base = config.load("configs/base.yaml", a.set)
     for k in ("coarse", "tercom", "dsmac", "retrieval", "track"):
         cfg[k] = base[k]
+    cfg["img"]["color_align"] = base["img"].get("color_align", "none")   # evaluation-time option
     cfg["model"]["pretrained"] = False
     cfg["train"]["workers"] = base["train"]["workers"]
     dev = torch.device("cuda")
