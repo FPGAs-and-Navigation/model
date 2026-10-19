@@ -11,6 +11,7 @@
   python -m btp.c2f runs/coarse/best.pt                 # classifier prior (fused UDML)
   python -m btp.c2f runs/coarse/best.pt --prior vision  # vision-only prior, geophysics only in TERCOM
   python -m btp.c2f runs/vision/best.pt                 # a regression model works too (Gaussian prior)
+  python -m btp.c2f runs/coarse/best.pt --retrieval runs/retrieval/best.pt   # classifier x retrieval
 
 Writes c2f_<prior>_metrics.json and c2f_<prior>_predictions.csv next to the checkpoint.
 """
@@ -27,6 +28,7 @@ from .config import MODALITIES
 from .dataset import HeldOutSet, MapData, available_years, test_year
 from .geo import bilinear, cell_centers, to_latlon
 from .models import Localizer
+from .retrieval import Retriever
 from .train import to_dev
 
 CHANNELS = ("mag", "gD", "GDD")
@@ -194,14 +196,15 @@ def summary(err):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ckpt")
-    ap.add_argument("--prior", default="fused", choices=["fused", *MODALITIES])
+    ap.add_argument("--prior", default="fused", choices=["fused", "none", *MODALITIES])
+    ap.add_argument("--retrieval", default=None, help="retrieval checkpoint; its prior multiplies the model's")
     ap.add_argument("--set", nargs="*", default=[], help="overrides for the coarse/tercom/dsmac settings")
     ap.add_argument("--limit", type=int, default=None, help="evaluate only this many windows")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
     cfg = ck["cfg"]
     base = config.load("configs/base.yaml", a.set)
-    for k in ("coarse", "tercom", "dsmac"):
+    for k in ("coarse", "tercom", "dsmac", "retrieval"):
         cfg[k] = base[k]
     cfg["model"]["pretrained"] = False
     dev = torch.device("cuda")
@@ -223,6 +226,8 @@ def main():
     print(f"test windows {len(ds)}, imagery {year}, reference map {cfg['dsmac']['ref_year']}, prior {a.prior}")
     print("profile noise (map vs real readings): " + ", ".join(f"{k} {v:.2f}" for k, v in sig.items()))
     dsmac = ImageMatcher(data, cfg, year)
+    retriever = Retriever(a.retrieval, data, cfg) if a.retrieval else None
+    tag = a.prior + ("+retrieval" if retriever else "")
     rng = np.random.default_rng(0)
 
     rows = []
@@ -232,7 +237,10 @@ def main():
         for batch in loader:
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 out = model(to_dev(batch, dev))
-            lps = log_prior(out, centers_m, data.ext, a.prior, cell)
+            lps = (log_prior(out, centers_m, data.ext, a.prior, cell) if a.prior != "none"
+                   else np.zeros((len(batch["avail"]), len(centers_m))))
+            if retriever is not None:
+                lps = lps + retriever.log_prior(batch["img"])
             for b in range(len(lps)):
                 i = i0 + b
                 te, tn = float(w["e"][i]), float(w["n"][i])
@@ -269,7 +277,7 @@ def main():
     err = lambda p: np.hypot(df[f"{p}_e"] - df.e, df[f"{p}_n"] - df.n)
     stages = {"coarse (top-1 cell centre)": "coarse", **{f"tercom {v}": f"tercom_{v}" for v in VARIANTS},
               "final (coarse -> tercom -> dsmac)": "final"}
-    report = dict(prior=a.prior, imagery_year=year, ref_year=cfg["dsmac"]["ref_year"], n=len(df),
+    report = dict(prior=tag, imagery_year=year, ref_year=cfg["dsmac"]["ref_year"], n=len(df),
                   profile_sigma=sig, topk_hit_rate=float(df.topk_hit.mean()),
                   dsmac_accept_rate=float(df.dsmac_accepted.mean()))
     print(f"\ntrue cell in top-{tercom.topk}: {report['topk_hit_rate']:.1%}; "
@@ -286,14 +294,14 @@ def main():
               f"<10m {s['within_10m']:.0%}")
 
     out_dir = a.ckpt.rsplit("/", 1)[0]
-    with open(f"{out_dir}/c2f_{a.prior}_metrics.json", "w") as f:
+    with open(f"{out_dir}/c2f_{tag}_metrics.json", "w") as f:
         json.dump(report, f, indent=1)
     for p in ("coarse", "tercom_mag+grav", "final"):
         df[f"{p}_lat"], df[f"{p}_lon"] = to_latlon(df[f"{p}_e"], df[f"{p}_n"])
     df["lat"], df["lon"] = to_latlon(df.e, df.n)
     df["final_error_m"] = err("final")
-    df.to_csv(f"{out_dir}/c2f_{a.prior}_predictions.csv", index=False)
-    print(f"wrote {out_dir}/c2f_{a.prior}_metrics.json and _predictions.csv")
+    df.to_csv(f"{out_dir}/c2f_{tag}_predictions.csv", index=False)
+    print(f"wrote {out_dir}/c2f_{tag}_metrics.json and _predictions.csv")
 
 
 if __name__ == "__main__":

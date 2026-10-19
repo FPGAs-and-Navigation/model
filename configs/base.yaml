@@ -59,6 +59,18 @@ dsmac:
   # (ncc: peak-to-sidelobe ratio; loftr/lightglue: RANSAC inliers). Set from the val benchmark.
   min_score: {ncc: 6.0, loftr: 15, lightglue: 8}
 
+retrieval:
+  stride: 100.0            # m between reference-map tiles in the database
+  hit_radius: 250.0        # m; a retrieved tile this close counts as a hit (and is not a negative)
+  tau: 0.05                # similarity temperature for the cell prior
+  dim: 256
+  batch: 96
+  epochs: 15
+  steps_per_epoch: 400
+  local_radius: 2000.0     # m; half the batches come from one neighbourhood (hard negatives)
+  lr_vit: 2.0e-5
+  lr: 1.0e-3
+
 train:
   batch: 64
   epochs: 30
