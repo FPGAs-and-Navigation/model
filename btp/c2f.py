@@ -17,13 +17,12 @@ Writes c2f_<prior>_metrics.json and c2f_<prior>_predictions.csv next to the chec
 import argparse
 import json
 
-import cv2
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from . import config
+from . import config, matchers
 from .config import MODALITIES
 from .dataset import HeldOutSet, MapData, available_years, test_year
 from .geo import bilinear, cell_centers, to_latlon
@@ -144,18 +143,16 @@ class ProfileMatcher:
 
 
 # ---------------------------------------------------------------- DSMAC
-def highpass(img, sigma=8.0):
-    g = img.astype(np.float32)
-    g = g - cv2.GaussianBlur(g, (0, 0), sigma)
-    return g / (cv2.GaussianBlur(np.abs(g), (0, 0), sigma) + 1.0)
-
-
 class ImageMatcher:
-    def __init__(self, data, cfg, query_year):
+    """Matches the UAV image against the onboard reference map with a matcher from btp/matchers.py."""
+
+    def __init__(self, data, cfg, query_year, dev="cuda"):
         self.d, self.c = data, cfg["dsmac"]
         self.res, self.size = cfg["img"]["res"], cfg["img"]["size"]
         self.query = data.image(query_year)
         self.ref = data.image(self.c["ref_year"])
+        self.fn = matchers.build(self.c["method"], dev)
+        self.min_score = self.c["min_score"][self.c["method"]]
 
     def gray(self, img, r0, c0, side):
         H, W = img.shape[:2]
@@ -164,58 +161,27 @@ class ImageMatcher:
         return np.asarray(img[r0:r0 + side, c0:c0 + side, :3], dtype=np.float32).mean(-1)
 
     def query_image(self, e, n, rng):
-        """The UAV's view: test-year imagery with small heading and altitude errors."""
+        """The UAV's view: test-year imagery with heading, altitude and tilt errors."""
         win = 320
         r, c = self.d.ext.to_pix(e, n, self.res)
         g = self.gray(self.query, int(round(r)) - win // 2, int(round(c)) - win // 2, win)
         if g is None:
             return None
-        ang = rng.normal(0, self.c["rot_sigma"])
-        scale = 1 + rng.normal(0, self.c["scale_sigma"])
-        M = cv2.getRotationMatrix2D((win / 2, win / 2), ang, 1 / scale)
-        g = cv2.warpAffine(g, M, (win, win), flags=cv2.INTER_LINEAR)
-        o = (win - self.size) // 2
-        return highpass(g[o:o + self.size, o:o + self.size])
+        return matchers.simulate_view(g, self.size, rng, self.c["rot_sigma"], self.c["scale_sigma"],
+                                      self.c.get("tilt_deg", 0))
 
-    def match(self, q, e, n):
-        """Best NCC position within `radius` of (e, n): returns (e, n, peak-to-sidelobe ratio)."""
-        rad = int(self.c["radius"] / self.res)
+    def match(self, q, e, n, radius=None):
+        """Best match within `radius` m of (e, n): returns (e, n, confidence)."""
+        rad = int((radius or self.c["radius"]) / self.res)
         side = self.size + 2 * rad
         r, c = self.d.ext.to_pix(e, n, self.res)
         r0, c0 = int(round(r)) - side // 2, int(round(c)) - side // 2
         ref = self.gray(self.ref, r0, c0, side)
         if ref is None:
             return e, n, -1.0
-        ncc = cv2.matchTemplate(highpass(ref), q, cv2.TM_CCOEFF_NORMED)
-        _, peak, _, (px, py) = cv2.minMaxLoc(ncc)
-        score = psr(ncc, px, py, peak)
-        dx, dy = subpixel(ncc, px, py)
-        # Template top-left (px, py) -> centre of the matched patch, in map coordinates.
-        cr, cc = r0 + py + dy + self.size / 2, c0 + px + dx + self.size / 2
+        x, y, conf = self.fn(q, ref)
         ext = self.d.ext
-        return ext.x0 + cc * self.res, ext.y1 - cr * self.res, float(score)
-
-
-def psr(m, x, y, peak, excl=8):
-    """Peak-to-sidelobe ratio: how far the peak stands out from the rest of the NCC map.
-
-    Absolute NCC is low across years (shadows, vegetation), but a correct match still
-    has a distinct peak, so this separates right from wrong matches far better.
-    """
-    side = np.ones(m.shape, bool)
-    side[max(0, y - excl):y + excl + 1, max(0, x - excl):x + excl + 1] = False
-    rest = m[side]
-    return float((peak - rest.mean()) / (rest.std() + 1e-6))
-
-
-def subpixel(m, x, y):
-    def fit(a, b, c):
-        d = a - 2 * b + c
-        return 0.0 if d == 0 else 0.5 * (a - c) / d
-    H, W = m.shape
-    dx = fit(m[y, x - 1], m[y, x], m[y, x + 1]) if 0 < x < W - 1 else 0.0
-    dy = fit(m[y - 1, x], m[y, x], m[y + 1, x]) if 0 < y < H - 1 else 0.0
-    return dx, dy
+        return ext.x0 + (c0 + x) * self.res, ext.y1 - (r0 + y) * self.res, float(conf)
 
 
 # ---------------------------------------------------------------- driver
@@ -291,7 +257,7 @@ def main():
                             best = m
                     oe, on, osc = dsmac.match(q, te, tn)          # matcher precision with a perfect hypothesis
                     row.update(oracle_e=oe, oracle_n=on, oracle_score=osc)
-                accept = best[2] >= cfg["dsmac"]["min_score"]
+                accept = best[2] >= dsmac.min_score
                 row.update(dsmac_score=best[2], dsmac_accepted=accept,
                            final_e=best[0] if accept else row["tercom_mag+grav_e"],
                            final_n=best[1] if accept else row["tercom_mag+grav_n"])

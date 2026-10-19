@@ -53,7 +53,11 @@ dsmac:
   radius: 250.0            # m searched around each hypothesis
   rot_sigma: 2.0           # deg, heading error of the query image
   scale_sigma: 0.03        # altitude error of the query image
-  min_score: 6.0           # peak-to-sidelobe ratio below which the profile-matching estimate is kept
+  tilt_deg: 0.0            # camera pitch/roll (perspective); realistic runs use ~10
+  method: loftr            # ncc | loftr | lightglue  (see python -m btp.matchers)
+  # Below this confidence the profile-matching estimate is kept
+  # (ncc: peak-to-sidelobe ratio; loftr/lightglue: RANSAC inliers). Set from the val benchmark.
+  min_score: {ncc: 6.0, loftr: 15, lightglue: 8}
 
 train:
   batch: 64
