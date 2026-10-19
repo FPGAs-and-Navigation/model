@@ -37,7 +37,7 @@ class Perturbed(torch.utils.data.Dataset):
         for m in self.drop:
             a[MODALITIES.index(m)] = False
         s["avail"] = a
-        g = torch.Generator().manual_seed(i)
+        g = torch.Generator().manual_seed(int(i))
         for m, sigma in self.noise.items():
             if m == "vision":
                 s["img"] = s["img"] + sigma * torch.randn(s["img"].shape, generator=g)
