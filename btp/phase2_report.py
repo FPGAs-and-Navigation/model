@@ -75,15 +75,20 @@ def main():
                          f"| – | {pct(r['topk_hit_rate'])} | |")
 
     lines += ["", "## 4. Single-shot pipeline (each position independently)", "",
-              "| configuration | median | within 10 m | within 25 m | p90 |", "|---|---|---|---|---|"]
+              "A position is reported only when the image match is confident; otherwise the output is "
+              "'no fix' and the vehicle continues on its IMU.", "",
+              "| configuration | fix rate | wrong fixes (>25 m, % of frames) | median of fixes | fixes within 10 m |",
+              "|---|---|---|---|---|"]
     for tag, name in (("fused_ncc_real", "classifier → TERCOM → NCC (realistic)"),
                       ("fused_loftr_real", "classifier → TERCOM → LoFTR (realistic)"),
                       ("fused+retrieval_loftr_real", "classifier×retrieval → TERCOM → LoFTR (realistic)"),
                       ("fused+retrieval_loftr_easy", "classifier×retrieval → TERCOM → LoFTR (easy)")):
         r = load(runs / "coarse" / f"c2f_{tag}_metrics.json")
         if r:
-            f = r["final (coarse -> tercom -> dsmac)"]
-            lines.append(f"| {name} | {m(f['median'])} | {pct(f['within_10m'])} | {pct(f['within_25m'])} | {m(f['p90'])} |")
+            f = r.get("final (fix / no fix)")
+            if f:
+                lines.append(f"| {name} | {pct(f['fix_rate'])} | {100 * f['wrong_fix_rate']:.2f}% | "
+                             f"{m(f.get('median'))} | {pct(f.get('within_10m'))} |")
             data[f"c2f_{tag}"] = r
 
     lines += ["", "## 5. Particle filter over whole flights (the combined system)", "",

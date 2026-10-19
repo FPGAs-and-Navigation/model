@@ -271,10 +271,14 @@ def main():
                             best = m
                     oe, on, osc = dsmac.match(q, te, tn)          # matcher precision with a perfect hypothesis
                     row.update(oracle_e=oe, oracle_n=on, oracle_score=osc)
+                # Only a confident image match is reported as a position fix. Otherwise the output
+                # is "no fix" (NaN) and the vehicle keeps flying on its IMU; `fallback_*` keeps the
+                # old behaviour (report the profile-matching estimate anyway) for comparison.
                 accept = best[2] >= dsmac.min_score
                 row.update(dsmac_score=best[2], dsmac_accepted=accept,
-                           final_e=best[0] if accept else row["tercom_mag+grav_e"],
-                           final_n=best[1] if accept else row["tercom_mag+grav_n"])
+                           final_e=best[0] if accept else np.nan, final_n=best[1] if accept else np.nan,
+                           fallback_e=best[0] if accept else row["tercom_mag+grav_e"],
+                           fallback_n=best[1] if accept else row["tercom_mag+grav_n"])
                 rows.append(row)
             i0 += len(lps)
             print(f"  {i0}/{len(ds)}", end="\r", flush=True)
@@ -282,7 +286,7 @@ def main():
     df = pd.DataFrame(rows)
     err = lambda p: np.hypot(df[f"{p}_e"] - df.e, df[f"{p}_n"] - df.n)
     stages = {"coarse (top-1 cell centre)": "coarse", **{f"tercom {v}": f"tercom_{v}" for v in VARIANTS},
-              "final (coarse -> tercom -> dsmac)": "final"}
+              "always answer (no-fix -> tercom estimate)": "fallback"}
     report = dict(prior=tag, imagery_year=year, ref_year=cfg["dsmac"]["ref_year"], n=len(df),
                   profile_sigma=sig, topk_hit_rate=float(df.topk_hit.mean()),
                   dsmac_accept_rate=float(df.dsmac_accepted.mean()))
@@ -293,6 +297,14 @@ def main():
         report[label] = s
         print(f"{label:36s} median {s['median']:7.1f} m  mean {s['mean']:7.1f} m  p90 {s['p90']:7.1f} m  "
               f"<10m {s['within_10m']:.0%}  <25m {s['within_25m']:.0%}  <100m {s['within_100m']:.0%}")
+    fix = df.dsmac_accepted.values
+    fe = err("final")[fix]
+    s = dict(fix_rate=float(fix.mean()), no_fix_rate=float(1 - fix.mean()),
+             wrong_fix_rate=float((fe > 25).sum() / len(df)), **summary(fe) if fix.any() else {})
+    report["final (fix / no fix)"] = s
+    print(f"{'final: fixes only':36s} fix rate {s['fix_rate']:.1%}  wrong fixes (>25 m) {s['wrong_fix_rate']:.2%} "
+          f"of frames | fixes: median {s.get('median', np.nan):.1f} m  <10m {s.get('within_10m', 0):.1%}  "
+          f"p90 {s.get('p90', np.nan):.1f} m")
     if "oracle_e" in df:
         s = summary(err("oracle").dropna())
         report["dsmac with true hypothesis"] = s
@@ -302,10 +314,10 @@ def main():
     out_dir = a.ckpt.rsplit("/", 1)[0]
     with open(f"{out_dir}/c2f_{tag}_metrics.json", "w") as f:
         json.dump(report, f, indent=1)
-    for p in ("coarse", "tercom_mag+grav", "final"):
+    for p in ("coarse", "tercom_mag+grav", "final", "fallback"):
         df[f"{p}_lat"], df[f"{p}_lon"] = to_latlon(df[f"{p}_e"], df[f"{p}_n"])
     df["lat"], df["lon"] = to_latlon(df.e, df.n)
-    df["final_error_m"] = err("final")
+    df["final_error_m"] = err("final")              # NaN where there is no fix
     df.to_csv(f"{out_dir}/c2f_{tag}_predictions.csv", index=False)
     print(f"wrote {out_dir}/c2f_{tag}_metrics.json and _predictions.csv")
 
