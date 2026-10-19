@@ -120,7 +120,8 @@ def drop_near_holdout(train, held):
 
 def windows(grav, mag, split, L, step, stride):
     """Resample each held-out segment to `step` m and cut L-step windows ending every `stride` steps."""
-    out = {k: [] for k in ("e", "n", "heading", "mag", "h_mag", "gD", "GDD", "h_grav", "line")}
+    out = {k: [] for k in ("e", "n", "heading", "mag", "h_mag", "gD", "GDD", "h_grav", "line",
+                                 "track_e", "track_n")}
     mag_s = mag[mag.split == split]
     for line, g in grav[grav.split == split].groupby("line", sort=False):
         m_line = mag_s[mag_s.base == line // 10]
@@ -151,6 +152,8 @@ def windows(grav, mag, split, L, step, stride):
                 out["mag"].append(r["mag"][sl]); out["h_mag"].append(r["h_mag"][sl])
                 out["gD"].append(r["gD"][sl]); out["GDD"].append(r["GDD"][sl])
                 out["h_grav"].append(r["h"][sl]); out["line"].append(line)
+                # Track relative to the current position (what onboard dead reckoning provides).
+                out["track_e"].append(r["e"][sl] - r["e"][k]); out["track_n"].append(r["n"][sl] - r["n"][k])
     return {k: np.asarray(v, dtype=np.int32 if k == "line" else np.float32) for k, v in out.items()}
 
 

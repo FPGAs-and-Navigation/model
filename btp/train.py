@@ -129,7 +129,7 @@ def main():
     val_dl = DataLoader(val_ds, 128, shuffle=False, **kw)
     print(f"train {len(train_ds)} samples/epoch, val {len(val_ds)} windows")
 
-    model = Localizer(cfg).to(dev)
+    model = Localizer(cfg, data.ext).to(dev)
     opt = torch.optim.AdamW(param_groups(model, cfg), betas=(0.9, 0.999))
     steps_per_epoch = len(train_dl)
     total = t["epochs"] * steps_per_epoch
@@ -150,7 +150,7 @@ def main():
             b = to_dev(batch, dev)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 out = model(b)
-            loss, logs = loss_fn(out, b["target"], cfg)
+            loss, logs = loss_fn(out, b["target"], cfg, model)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

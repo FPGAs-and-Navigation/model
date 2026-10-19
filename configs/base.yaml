@@ -34,6 +34,26 @@ model:
   pretrained: true
   dim: 256                 # latent size of each (mu, Sigma)
   attn_heads: 4
+  head: regress            # regress: lat/lon directly | classify: probabilities over map cells
+
+# Coarse-to-fine pipeline (btp/c2f.py)
+coarse:
+  cell: 250.0              # m, classification cell size
+  label_sigma: 0.5         # soft-label width in cells (neighbouring cells share credit)
+  topk: 10                 # cells passed on to profile matching
+tercom:
+  margin: 125.0            # m searched beyond each candidate cell
+  step: 25.0               # m search lattice
+  headings: [-3, 0, 3]     # deg, compass error searched
+  ins_drift: 0.01          # fraction of distance travelled, dead-reckoning error on the track
+  temper: 4.0              # divides the profile log-likelihood (consecutive samples are correlated)
+  hypotheses: 5            # distinct positions passed on to image matching
+dsmac:
+  ref_year: 2020           # onboard reference map (older than the test imagery)
+  radius: 250.0            # m searched around each hypothesis
+  rot_sigma: 2.0           # deg, heading error of the query image
+  scale_sigma: 0.03        # altitude error of the query image
+  min_score: 6.0           # peak-to-sidelobe ratio below which the profile-matching estimate is kept
 
 train:
   batch: 64

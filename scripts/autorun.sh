@@ -2,7 +2,7 @@
 # Self-healing driver for kratos, run by cron every 10 min and at boot (entries tagged # btp-train).
 # Install:  scripts/autorun.sh --install     Remove:  scripts/autorun.sh --uninstall
 #  - copies newly verified NAIP years (CoW) and builds their mosaics,
-#  - runs/resumes the staged training,
+#  - runs/resumes the staged training (scripts/train_staged.sh lists the stages),
 #  - re-evaluates finished stages once the held-out 2022 imagery is ready,
 #  - removes its cron entries when everything is done.
 # Progress: runs/autorun.log, runs/staged.log, runs/<stage>.log
@@ -41,7 +41,9 @@ fi
 
 # Stages finished before the held-out year was ready were tested on a training year; redo them.
 pending=0
-for d in runs/vision runs/vision+mag runs/vision+mag+grav; do
+for d in runs/*/; do
+  d="${d%/}"
+  [ -f "$d/DONE" ] || continue
   if [ -f "data/processed/naip_${TEST_YEAR}.npy" ]; then
     if ! grep -q "\"imagery_year\": ${TEST_YEAR}" "$d/test_metrics.json" 2>/dev/null; then
       log "re-evaluating $d on $TEST_YEAR imagery"

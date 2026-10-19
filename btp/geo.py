@@ -50,6 +50,16 @@ class Extent:
             return cls(**json.load(f))
 
 
+def cell_centers(ext, cell):
+    """Centres (E, N) of the coarse classification cells, row-major from the NW corner."""
+    rows = int(np.ceil((ext.y1 - ext.y0) / cell))
+    cols = int(np.ceil((ext.x1 - ext.x0) / cell))
+    r, c = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
+    e = ext.x0 + (c.ravel() + 0.5) * cell
+    n = ext.y1 - (r.ravel() + 0.5) * cell
+    return np.stack([e, n], 1), (rows, cols)
+
+
 def to_latlon(e, n):
     lon, lat = _to_ll.transform(np.asarray(e), np.asarray(n))
     return lat, lon

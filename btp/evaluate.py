@@ -58,9 +58,9 @@ def main():
     cfg = ck["cfg"]
     cfg["model"]["pretrained"] = False
     dev = torch.device("cuda")
-    model = Localizer(cfg).to(dev)
-    model.load_state_dict(ck["model"])
     data = MapData(cfg, available_years(cfg))
+    model = Localizer(cfg, data.ext).to(dev)
+    model.load_state_dict(ck["model"])
     year = a.year or test_year(cfg)
     ds = HeldOutSet(data, a.split, year)
     load = lambda d: DataLoader(d, 128, num_workers=cfg["train"]["workers"], pin_memory=True)

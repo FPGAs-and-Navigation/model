@@ -30,9 +30,9 @@ def main():
     cfg = ck["cfg"]
     cfg["model"]["pretrained"] = False
     dev = torch.device("cuda")
-    model = Localizer(cfg).to(dev).eval()
-    model.load_state_dict(ck["model"])
     data = MapData(cfg, available_years(cfg))
+    model = Localizer(cfg, data.ext).to(dev).eval()
+    model.load_state_dict(ck["model"])
     year = test_year(cfg)
     ds = HeldOutSet(data, "test", year)
     lines = ds.w["line"]
