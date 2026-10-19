@@ -48,6 +48,12 @@ The slide-6 model stays at the core, and three published ideas are wrapped aroun
 
 `scripts/phase2.sh` runs every evaluation and ablation, then writes `runs/phase2/report.md`.
 
+## Phase 3: fixes from the literature (`scripts/phase3.sh`, off by default)
+- **Balanced training against vision dominance:** `train.ogm_alpha`, OGM from Peng et al. (CVPR 2022), plus a per-modality `train.mod_dropout` dict.
+- **SeqSLAM-style sequence prior:** `coarse.seq_len` averages the motion-compensated coarse priors of the last k frames.
+- **Instance colour alignment to the onboard map:** `img.color_align: instance`.
+- **Particles estimate the dead-reckoning heading/scale bias:** `track.estimate_bias`, the augmented-state idea from marginalised-PF magnetic navigation.
+
 ## Data
 - **Imagery:** NAIP 0.6 m imagery for 2016, 2018, 2020 and 2022. It is resampled to 1.25 m/px; one crop is 224 px, about 280 m across.
 - **Geophysics:** the USGS 2016 HeliFALCON survey (DOI 10.5066/P9SQV3SB):

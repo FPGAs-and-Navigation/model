@@ -16,6 +16,7 @@ img:
   window: 320              # px read around the position before rotate/scale/crop
   scale_jitter: 0.15       # +-15 % footprint, i.e. altitude
   rot_jitter: 10.0         # degrees, heading error
+  color_align: none        # none | instance: match each crop's colour stats to the reference map
 seq:
   len: 64                  # samples in a sensor profile
   step: 25.0               # m between samples (64 x 25 m = 1.6 km of history)
@@ -41,6 +42,7 @@ coarse:
   cell: 250.0              # m, classification cell size
   label_sigma: 0.5         # soft-label width in cells (neighbouring cells share credit)
   topk: 10                 # cells passed on to profile matching
+  seq_len: 1               # >1: SeqSLAM-style prior averaged over this many frames (motion-compensated)
 tercom:
   margin: 125.0            # m searched beyond each candidate cell
   step: 25.0               # m search lattice
@@ -75,6 +77,7 @@ track:                     # particle filter over held-out flights (btp/track.py
   image_seed: 0.1          # fraction of particles placed at a confident image fix
   gain_min: 0.25           # UDML gain K*w_k clipped to [gain_min, gain_max]
   gain_max: 2.0
+  estimate_bias: false     # particles also estimate the dead-reckoning heading/scale bias
 
 retrieval:
   stride: 100.0            # m between reference-map tiles in the database
@@ -98,7 +101,8 @@ train:
   weight_decay: 0.05
   warmup_steps: 1000
   workers: 16
-  mod_dropout: 0.15        # per-modality drop probability (at least one is always kept)
+  mod_dropout: 0.15        # per-modality drop probability, or a dict {vision: .., mag: .., grav: ..}
+  ogm_alpha: 0.0           # >0: OGM gradient modulation slows the dominant modality's encoder
   aux_weight: 0.3
   kl_beta: 1.0e-4
   val_stride: 4            # steps between validation windows on a held-out line

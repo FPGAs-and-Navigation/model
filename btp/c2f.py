@@ -51,6 +51,31 @@ def log_prior(out, centers_m, ext, source, cell):
     return lp - np.logaddexp.reduce(lp, axis=1, keepdims=True)
 
 
+class SequencePrior:
+    """SeqSLAM-style coarse prior: average the log-priors of the last `k` frames of the same flight,
+    each shifted by the dead-reckoned displacement since then, so one ambiguous frame no longer
+    decides the candidate cells. k=1 is the single-frame prior."""
+
+    def __init__(self, tercom, centers, k):
+        self.t, self.c, self.k, self.hist = tercom, centers, k, []
+
+    def __call__(self, lp, seg, e, n):
+        if self.k <= 1:
+            return lp
+        if self.hist and self.hist[-1][0] != seg:
+            self.hist = []
+        self.hist = (self.hist + [(seg, e, n, lp)])[-self.k:]
+        ext, uni = self.t.d.ext, -np.log(len(lp))
+        acc = np.zeros_like(lp)
+        for _, pe, pn, plp in self.hist:
+            # Where each candidate cell's drone would have been at that earlier frame.
+            ce, cn = self.c[:, 0] - (e - pe), self.c[:, 1] - (n - pn)
+            inside = (ce > ext.x0) & (ce < ext.x1) & (cn > ext.y0) & (cn < ext.y1)
+            acc += np.where(inside, plp[self.t.cell_of(ce, cn)], uni)
+        acc /= len(self.hist)
+        return acc - np.logaddexp.reduce(acc)
+
+
 # ---------------------------------------------------------------- TERCOM
 class ProfileMatcher:
     def __init__(self, data, cfg):
@@ -171,9 +196,14 @@ class ImageMatcher:
         """The UAV's view: test-year imagery with heading, altitude and tilt errors."""
         win = 320
         r, c = self.d.ext.to_pix(e, n, self.res)
-        g = self.gray(self.query, int(round(r)) - win // 2, int(round(c)) - win // 2, win)
-        if g is None:
+        r0, c0 = int(round(r)) - win // 2, int(round(c)) - win // 2
+        H, W = self.query.shape[:2]
+        if r0 < 0 or c0 < 0 or r0 + win > H or c0 + win > W:
             return None
+        rgb = np.asarray(self.query[r0:r0 + win, c0:c0 + win, :3])
+        if self.d.cfg["img"].get("color_align", "none") == "instance":
+            rgb = self.d.align_color(rgb)
+        g = rgb.astype(np.float32).mean(-1)
         return matchers.simulate_view(g, self.size, rng, self.c["rot_sigma"], self.c["scale_sigma"],
                                       self.c.get("tilt_deg", 0))
 
@@ -235,6 +265,7 @@ def main():
     retriever = Retriever(a.retrieval, data, cfg) if a.retrieval else None
     tag = a.tag or a.prior + ("+retrieval" if retriever else "")
     rng = np.random.default_rng(0)
+    seq = SequencePrior(tercom, centers_m, cfg["coarse"].get("seq_len", 1))
 
     rows = []
     loader = DataLoader(ds, 64, num_workers=cfg["train"]["workers"], pin_memory=True)
@@ -250,7 +281,7 @@ def main():
             for b in range(len(lps)):
                 i = i0 + b
                 te, tn = float(w["e"][i]), float(w["n"][i])
-                lp = lps[b]
+                lp = seq(lps[b], int(w["seg"][i]), float(w["e"][i]), float(w["n"][i]))
                 true_cell = tercom.cell_of(np.array([te]), np.array([tn]))[0]
                 top = np.argsort(lp)[::-1]
                 row = dict(e=te, n=tn, line=int(w["line"][i]),

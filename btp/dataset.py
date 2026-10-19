@@ -51,6 +51,25 @@ class MapData:
             self._img[year] = np.load(self.dir / f"naip_{year}.npy", mmap_mode="r")
         return self._img[year]
 
+    def ref_color_stats(self):
+        """Per-channel mean/std of the onboard reference map (dsmac.ref_year), from a sparse sample."""
+        if not hasattr(self, "_ref_stats"):
+            ref = self.image(self.cfg["dsmac"]["ref_year"])[::50, ::50, :3].reshape(-1, 3).astype(np.float32)
+            ref = ref[ref.max(1) > 0]
+            self._ref_stats = ref.mean(0), ref.std(0)
+        return self._ref_stats
+
+    def align_color(self, rgb):
+        """Instance colour alignment: give the image the reference map's per-channel mean/std.
+
+        Uses only the image itself plus fixed map statistics, so it is available onboard; it
+        removes most of the global brightness/colour shift between imagery years.
+        """
+        m, sd = self.ref_color_stats()
+        x = rgb.astype(np.float32)
+        x = (x - x.mean((0, 1))) / (x.std((0, 1)) + 1e-3) * sd + m
+        return np.clip(x, 0, 255).astype(np.uint8)
+
     def norm(self, key, v):
         m, s = self.stats[key]
         return (v - m) / s
@@ -74,6 +93,8 @@ class Sampler:
         r, c = self.d.ext.to_pix(e, n, self.res)
         r0, c0 = int(round(r)) - self.win // 2, int(round(c)) - self.win // 2
         win = np.asarray(img[r0:r0 + self.win, c0:c0 + self.win, :3])
+        if self.d.cfg["img"].get("color_align", "none") == "instance":
+            win = self.d.align_color(win)
         t = torch.from_numpy(np.ascontiguousarray(win)).permute(2, 0, 1)
         side = self.size
         if self.train:
@@ -102,6 +123,8 @@ class Sampler:
         a = np.array([m in mods for m in config.MODALITIES])
         if self.train:
             p = self.d.cfg["train"]["mod_dropout"]
+            if isinstance(p, dict):                       # per-modality, e.g. drop vision more often
+                p = np.array([p.get(m, 0.0) for m in config.MODALITIES])
             drop = a & (rng.random(3) < p)
             if (a & ~drop).any():
                 a &= ~drop

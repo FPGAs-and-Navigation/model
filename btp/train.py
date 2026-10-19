@@ -19,6 +19,7 @@ from . import config
 from .config import MODALITIES
 from .dataset import HeldOutSet, MapData, TrainSet, available_years
 from .models import Localizer, loss_fn
+from .models.model import gaussian_nll, soft_ce
 
 
 def to_dev(batch, dev):
@@ -88,6 +89,35 @@ def evaluate(model, loader, ext, dev):
     return res, np.concatenate(preds)
 
 
+@torch.no_grad()
+def ogm_coefficients(out, target, model, alpha):
+    """OGM (Peng et al., CVPR 2022): slow down the encoder of a modality that already does better
+    than the others, so the weaker encoders keep getting useful gradient.
+
+    Each modality's performance is its auxiliary-head loss on the batch; a modality whose loss
+    is lower than the mean of the others by d gets its encoder gradients scaled by
+    1 - tanh(alpha * d). (The paper's extra Gaussian gradient noise is not used.)
+    """
+    if alpha <= 0 or len(model.mods) < 2:
+        return {}
+    avail = out["avail"]
+    if "aux_logits" in out:
+        per = soft_ce(out["aux_logits"], model.soft_labels(target).unsqueeze(1))
+    else:
+        per = gaussian_nll(out["aux_pos"], out["aux_logvar"], target.unsqueeze(1))
+    loss = {}
+    for m in model.mods:
+        k = MODALITIES.index(m)
+        if avail[:, k].any():
+            loss[m] = per[avail[:, k], k].mean().item()
+    coef = {}
+    for m, l in loss.items():
+        others = [v for o, v in loss.items() if o != m]
+        if others:
+            coef[m] = 1.0 - math.tanh(alpha * max(0.0, sum(others) / len(others) - l))
+    return coef
+
+
 def lr_at(step, total, warmup):
     if step < warmup:
         return (step + 1) / warmup
@@ -153,6 +183,11 @@ def main():
             loss, logs = loss_fn(out, b["target"], cfg, model)
             opt.zero_grad(set_to_none=True)
             loss.backward()
+            coef = ogm_coefficients(out, b["target"], model, t.get("ogm_alpha", 0.0))
+            for m, c in coef.items():
+                for p in model.enc[m].parameters():
+                    if p.grad is not None:
+                        p.grad.mul_(c)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             step += 1
@@ -164,6 +199,8 @@ def main():
                 w = out["w"].float().mean(0)
                 for j, m in enumerate(MODALITIES):
                     tb.add_scalar(f"train/w_{m}", w[j].item(), step)
+                for m, c in coef.items():
+                    tb.add_scalar(f"train/ogm_{m}", c, step)
             if i % 200 == 0:
                 print(f"ep {epoch} it {i}/{steps_per_epoch} loss {logs['loss']:.3f} nll {logs['nll']:.3f} "
                       f"lr {opt.param_groups[-1]['lr']:.2e} {(time.time() - t0) / (i + 1):.2f}s/it", flush=True)

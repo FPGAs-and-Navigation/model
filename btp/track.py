@@ -15,7 +15,7 @@ Per step:
   python -m btp.track runs/coarse/best.pt [--retrieval runs/retrieval/best.pt]
         [--weights udml|equal] [--no-mag] [--no-grav] [--no-image] [--mag-noise 2] [--flights 3]
 
-Writes runs/phase2/track_<tag>.json (+ per-step CSV and plots of the first flights).
+Writes runs/<outdir>/track_<tag>.json (+ per-step CSV and plots of the first flights).
 """
 import argparse
 import json
@@ -100,6 +100,12 @@ class Filter:
         c, N = self.c, self.c["particles"]
         x = self.sample_prior(lps[0], N)
         logw = np.zeros(N)
+        # Optional augmented state: each particle carries its own guess of the dead-reckoning
+        # heading/scale bias (as in marginalised-PF magnetic navigation), so the filter learns the
+        # bias from the fixes and drifts less between them.
+        est_bias = c.get("estimate_bias", False)
+        sd_b = np.array([np.radians(c["dr_heading_bias_deg"]), c["dr_scale_bias"]])
+        bias = self.rng.normal(0, 1, (N, 2)) * sd_b if est_bias else np.zeros((N, 2))
         rows = []
         for t, i in enumerate(idx):
             if t > 0:
@@ -108,11 +114,19 @@ class Filter:
                 # Dead reckoning: per-flight scale/heading bias plus random drift.
                 u = dr_bias @ u
                 dist = np.hypot(*u)
-                x = x + u + self.rng.normal(0, c["motion_sigma"] + c["drift"] * dist, (N, 2))
+                if est_bias:                                  # undo each particle's bias guess
+                    ca, sa = np.cos(bias[:, 0]), np.sin(bias[:, 0])
+                    uc = np.stack([ca * u[0] - sa * u[1], sa * u[0] + ca * u[1]], 1) / (1 + bias[:, 1:2])
+                    bias += self.rng.normal(0, 1, (N, 2)) * sd_b * 0.02
+                else:
+                    uc = u
+                x = x + uc + self.rng.normal(0, c["motion_sigma"] + c["drift"] * dist, (N, 2))
                 k = int(c["reinject"] * N)
                 if k:
                     sl = self.rng.choice(N, k, replace=False)
                     x[sl] = self.sample_prior(lps[t], k)
+                    if est_bias:
+                        bias[sl] = self.rng.normal(0, 1, (k, 2)) * sd_b
                     logw[sl] = np.log(np.mean(np.exp(logw - logw.max()))) + logw.max()
             g = self.gains(udml_w[t])
             ll, ok = self.geo_loglik(x, w, i)
@@ -141,27 +155,35 @@ class Filter:
                     # Robust: a wrong confident match can't wipe out the rest of the cloud.
                     logw += g["vision"] * np.log(c["image_outlier"] + np.exp(-0.5 * d2 / s2))
                     k = int(c["image_seed"] * N)
-                    sl = np.argsort(logw)[:k]                          # replace the worst particles
+                    order = np.argsort(logw)
+                    sl = order[:k]                                     # replace the worst particles
                     x[sl] = matched + self.rng.normal(0, c["image_sigma"], (k, 2))
+                    bias[sl] = bias[self.rng.choice(order[-k:], k)]    # with the best particles' bias
                     logw[sl] = logw.max()
 
             logw -= logw.max()
             wt = np.exp(logw)
             ess = wt.sum() ** 2 / (wt ** 2).sum()
             est, mode_frac = self.estimate(x, logw)
+            b_est = float(np.degrees(np.average(bias[:, 0], weights=wt)))
             if ess < N / 2:
-                x = systematic(x, wt / wt.sum(), self.rng) + self.rng.normal(0, 2.0, (N, 2))
+                ri = systematic(wt / wt.sum(), self.rng)
+                x = x[ri] + self.rng.normal(0, 2.0, (N, 2))
+                bias = bias[ri]
                 logw = np.zeros(N)
             rows.append(dict(e=float(w["e"][i]), n=float(w["n"][i]), pe=est[0], pn=est[1], ess=ess,
                              mode_frac=mode_frac, image_fix=matched is not None,
+                             bias_deg=b_est,
+                             true_bias_deg=float(np.degrees(np.arctan2(dr_bias[0, 1], dr_bias[0, 0]))),
                              w_vision=udml_w[t][0], w_mag=udml_w[t][1], w_grav=udml_w[t][2]))
         return pd.DataFrame(rows)
 
 
-def systematic(x, p, rng):
+def systematic(p, rng):
+    """Indices for systematic resampling."""
     N = len(p)
     pos = (rng.random() + np.arange(N)) / N
-    return x[np.minimum(np.searchsorted(np.cumsum(p), pos), N - 1)]
+    return np.minimum(np.searchsorted(np.cumsum(p), pos), N - 1)
 
 
 def summarise(df):
@@ -194,6 +216,7 @@ def main():
     ap.add_argument("--flights", type=int, default=None, help="only the first N flights")
     ap.add_argument("--plots", type=int, default=4)
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--outdir", default="phase2", help="folder under runs/ for the outputs")
     ap.add_argument("--set", nargs="*", default=[])
     a = ap.parse_args()
 
@@ -228,7 +251,7 @@ def main():
     tag = a.tag or "_".join([a.prior + ("+retrieval" if retriever else ""), a.weights]
                             + [f"no{m}" for m, u in use.items() if not u]
                             + ([f"magnoise{a.mag_noise:g}"] if a.mag_noise else []))
-    out_dir = config.path(cfg, "run_dir") / "phase2"
+    out_dir = config.path(cfg, "run_dir") / a.outdir
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"{a.split}: imagery {year}, ref map {cfg['dsmac']['ref_year']}, matcher {cfg['dsmac']['method']}, "
           f"tag {tag}")
