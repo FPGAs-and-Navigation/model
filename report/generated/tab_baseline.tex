@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\small
+\caption{The slide-6 model on its own: median localisation error of the fused output on the validation lines (training-year imagery) and the test lines (held-out 2022 imagery), the error of each modality's auxiliary head alone, and the mean UDML weights.}
+\label{tab:baseline}
+\begin{adjustbox}{max width=\linewidth}
+\begin{tabular}{lrrrrrrc}
+\toprule
+Model & Val.\ (2016--20) & Test (2022) & Test p90 & Vision alone & Mag alone & Grav alone & $w_v / w_m / w_g$ \\
+\midrule
+Vision only & 79.8\,m & 361\,m & 4{,}560\,m & 361\,m & -- & -- & 1.00 / 0.00 / 0.00 \\
+Vision + magnetometer & 95.2\,m & 370\,m & 4{,}266\,m & 376\,m & 2{,}386\,m & -- & 0.97 / 0.03 / 0.00 \\
+Vision + mag + gravity & 94.0\,m & 341\,m & 3{,}590\,m & 358\,m & 3{,}123\,m & 2{,}503\,m & 0.94 / 0.02 / 0.03 \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\end{table}

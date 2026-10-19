@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Single-shot output with the \emph{no-fix} policy: a position is reported only when the LoFTR match has at least 15 RANSAC inliers. Wrong fixes are reported positions more than 25\,m off, as a share of all frames.}
+\label{tab:c2ffix}
+\begin{adjustbox}{max width=\linewidth}
+\begin{tabular}{lrrrrr}
+\toprule
+Prior & Fix rate & Wrong fixes & Median of fixes & Fixes $<$10\,m & p90 of fixes \\
+\midrule
+Vision regressor & 71\% & 0.00\% & 1.0\,m & 100\% & 2.1\,m \\
+V+M regressor & 70\% & 0.00\% & 1.5\,m & 100\% & 2.9\,m \\
+V+M+G regressor & 70\% & 0.00\% & 1.6\,m & 100\% & 3.0\,m \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\end{table}

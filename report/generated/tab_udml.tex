@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Mean UDML weights $w_v / w_m / w_g$ when one input is corrupted at test time (image: $\sigma=1$, profiles: $\sigma=2$ in normalised units). A working uncertainty-aware fusion lowers the weight of the corrupted modality.}
+\label{tab:udml}
+\begin{adjustbox}{max width=\linewidth}
+\begin{tabular}{lcccc}
+\toprule
+Model & Clean & Noisy image & Noisy mag & Noisy grav \\
+\midrule
+Vision + magnetometer & 0.97 / 0.03 / 0.00 & 0.78 / 0.22 / 0.00 & 0.92 / 0.08 / 0.00 & -- \\
+Vision + mag + gravity & 0.94 / 0.02 / 0.03 & 0.83 / 0.07 / 0.11 & 0.93 / 0.04 / 0.03 & 0.95 / 0.02 / 0.03 \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\end{table}

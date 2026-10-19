@@ -57,3 +57,5 @@ if [ ! -f runs/phase3/DONE ]; then
   date '+%F %T' > runs/phase3/DONE
   grep -A200 "^# Phase 3 results" runs/phase3/report.md >> runs/staged.log || true
 fi
+# Rebuild the LaTeX report with every result (report/main.pdf).
+scripts/build_report.sh >> runs/staged.log 2>&1 || echo "report build failed; see report/build.log" | tee -a runs/staged.log

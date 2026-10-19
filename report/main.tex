@@ -1,0 +1,348 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{adjustbox}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+\captionsetup{font=small,labelfont=bf}
+\setlist{itemsep=2pt,topsep=4pt}
+\newcommand{\pendingbox}[1]{\fbox{\parbox{0.9\linewidth}{\centering\small\textit{#1}}}}
+\newcommand{\fig}[3]{%
+  \IfFileExists{#1}{\includegraphics[width=#2]{#1}}{\pendingbox{Figure pending: #3}}}
+\newcommand{\todo}[1]{\par\noindent\colorbox{yellow!25}{\parbox{\dimexpr\linewidth-2\fboxsep}{\small\textbf{To update when the run finishes:} #1}}\par}
+
+\input{generated/macros.tex}
+
+\title{\textbf{Enabling Onboard Navigation for UAVs in GPS-Denied Environments}\\[0.4em]
+\large Multimodal localisation from aerial imagery, magnetometry and gravimetry\\
+with uncertainty-aware fusion and coarse-to-fine refinement}
+\author{Advika Sinha (23117010) \and Cherish Puniani (23117042) \and Namay Rohatgi (23119022) \and Varun R Mallya (23117144)\\[0.6em]
+\textit{Advisor:} Prof.\ Nitish Arya\\
+Indian Institute of Technology Roorkee\\
+MIP400A: B.Tech Project}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A UAV that loses GNSS must localise itself from what its own sensors observe. We build and evaluate,
+in simulation on real survey data, the multimodal localiser proposed in our mid-term evaluation: a
+Vision Transformer for the aerial image and 1D-CNN encoders for magnetic and gravity profiles, each
+producing a probabilistic representation $(\mu,\Sigma)$, fused by an uncertainty-aware core (UDML)
+that computes noise-aware uncertainty $\rho$, modality dependency $\alpha$ and fusion weights
+$w_v,w_m,w_g$, followed by a localisation head. We assemble a co-registered dataset over Mountain Pass,
+California from four years of 0.6\,m NAIP imagery and a 2016 helicopter survey with a full-tensor
+gravity gradiometer and a caesium magnetometer, and evaluate on held-out flight lines (whose readings
+were never gridded into the training maps) with held-out-year imagery. Regressing coordinates
+directly, the model reaches a median error of \ResvisionmaggravValMedian{} on training-year imagery but
+\ResvisionmaggravMedian{} on the held-out year. We therefore wrap it in a coarse-to-fine pipeline: the
+network proposes candidate map cells, magnetic/gravity profile matching (TERCOM) selects among them,
+and a learned image matcher (LoFTR) against an onboard reference map refines the position. Reporting
+a position only when the image match is confident, a single frame yields a fix in \ResSSFixRate{} of
+cases with a median error of \ResSSFixMedian{} and no wrong fixes. Tracking over whole flights with a
+particle filter that combines all three modalities, weighted by UDML, gives a median error of
+\ResPFFullMedian{} (\ResPFFullWithin{} of steps within 10\,m). We report ablations per modality, the
+behaviour of the UDML weights, and the limitations of the simulation.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+%======================================================================
+\section{Introduction}
+GNSS signals are weak and easily jammed or spoofed, yet survey, disaster-response and defence UAVs must
+keep flying when GNSS fails. Classical solutions predate GNSS: TERCOM matched radar-altimeter terrain
+profiles against elevation maps~\cite{golden1980tercom} and DSMAC correlated downward-looking images with
+a reference scene~\cite{carr1980dsmac}. Modern counterparts match UAV images to satellite imagery with
+learned features~\cite{goforth2019gps,patel2020visual,hierarchical2025} or match magnetic and gravity
+anomaly measurements against geophysical maps~\cite{canciani2016absolute,gravityreview2026}.
+
+This semester's goal was an end-to-end pipeline in simulation: aerial observations in, latitude and
+longitude out. Our contributions are:
+\begin{enumerate}
+\item A co-registered multimodal dataset (imagery, magnetometry, gravimetry, positions) over a
+250\,km$^2$ region, with an evaluation protocol that holds out entire flight lines from the
+geophysical maps and an entire imagery year (\cref{sec:data}).
+\item An implementation of the mid-term architecture (\cref{fig:arch}): ViT and 1D-CNN encoders with
+probabilistic outputs and the UDML fusion core (\cref{sec:model}).
+\item A coarse-to-fine system around it, combining learned coarse localisation, retrieval, TERCOM-style
+profile matching, learned image matching and particle-filter tracking (\cref{sec:c2f,sec:pf}), and
+literature-driven fixes for the weaknesses we measured (\cref{sec:phase3}).
+\item A quantitative evaluation including per-modality ablations and the behaviour of the UDML weights
+under sensor degradation (\cref{sec:results}).
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\fig{figures/architecture.png}{0.95\linewidth}{architecture}
+\caption{The architecture proposed at the mid-term evaluation and implemented here.}
+\label{fig:arch}
+\end{figure}
+
+%======================================================================
+\section{Related work}
+\paragraph{Visual absolute localisation.}
+Goforth and Lucey~\cite{goforth2019gps} align UAV frames to satellite imagery with CNN features trained
+for cross-season robustness and report an average error below 8\,m on a 0.85\,km flight. Patel et
+al.~\cite{patel2020visual} localise against Google Earth renderings with sub-metre RMSE on a 303\,m
+flight. SWA-PF~\cite{swapf2025} and Shan et al.~\cite{shan2017googlemap} combine map matching with
+particle filters; FoundLoc~\cite{foundloc2023} uses foundation-model features without an initial pose.
+Recent work splits the problem into retrieval and fine matching~\cite{hierarchical2025,anyvisloc2025}.
+Benchmarks with real UAV imagery include UAV-VisLoc~\cite{uavvisloc2024} and AnyVisLoc~\cite{anyvisloc2025}.
+
+\paragraph{Retrieval and matching.}
+DINOv2~\cite{oquab2023dinov2} features give strong zero-shot place recognition (AnyLoc~\cite{keetha2023anyloc});
+contrastive training with hard negatives (Sample4Geo~\cite{deuser2023sample4geo}, TransGeo~\cite{zhu2022transgeo})
+is the state of the art for drone-to-satellite retrieval. LoFTR~\cite{sun2021loftr} and
+LightGlue~\cite{lindenberger2023lightglue} with DISK~\cite{tyszkiewicz2020disk} provide dense and sparse
+learned correspondences. Direct pose regression~\cite{kendall2015posenet} is known to behave like image
+retrieval and to generalise poorly~\cite{sattler2019limits}.
+
+\paragraph{Geophysical navigation.}
+Canciani and Raquet~\cite{canciani2016absolute} report about 13\,m horizontal error over an hour-long
+flight with a caesium magnetometer and a marginalised particle filter, a best case at low altitude.
+Gravity matching is reviewed in~\cite{gravityreview2026}. MagNav~\cite{gnadt2020magnav,magnavjl}
+provides reference filters.
+
+\paragraph{Multimodal learning and sequences.}
+A dominant modality can starve the others of gradient; OGM-GE~\cite{peng2022ogm} modulates gradients to
+balance them. SeqSLAM~\cite{milford2012seqslam} and SeqNet~\cite{garg2021seqnet} match sequences rather than
+single frames to cope with appearance change.
+
+%======================================================================
+\section{Data}\label{sec:data}
+\paragraph{Site.} Mountain Pass, Mojave Desert, California (lon $-115.58$ to $-115.38$, lat $35.36$ to
+$35.59$). Terrain elevation ranges from 867 to 2399\,m; the area contains mountains, alluvial fans, a
+dry lake, solar plants, a mine and the I-15 corridor (\cref{fig:data}).
+
+\paragraph{Imagery.} NAIP~\cite{naip} 4-band orthoimagery at 0.6\,m for 2016, 2018, 2020 and 2022
+(81 quarter-quad tiles, 36.5\,GB), mosaicked per year and resampled to 1.25\,m/px. A 224\,px input crop
+covers about 280\,m.
+
+\paragraph{Geophysics.} A USGS-contracted helicopter survey (late 2016)~\cite{usgs_mtnpass_agg,usgs_mtnpass_mag}
+with a HeliFALCON airborne gravity gradiometer and a Scintrex CS-3 caesium magnetometer: 184 flight
+lines, traverse lines 200\,m apart (100\,m infill in part) and tie lines, median 68\,m above ground,
+gravity sampled at 8\,Hz (about 3.4\,m along-track) and magnetics decimated to about 27\,m. We use the
+vertical gravity $g_D$ and the gradient $G_{DD}$ \emph{without} terrain correction (what an aircraft
+senses) and the residual magnetic intensity (RMI). Everything is expressed in UTM 11N (NAD83).
+
+\paragraph{Splits.} Traverse lines are ordered across-track; of every eight adjacent lines one is
+used for validation and one for testing, and each infill line follows its neighbour; tie lines stay in
+training. The magnetic and gravity \emph{training maps are gridded only from training lines} (linear
+interpolation at 25\,m with light smoothing; samples within 60\,m of a held-out line are dropped), so
+evaluation never uses readings that went into the maps. Validation and test samples are the raw
+readings of the held-out lines, resampled to 25\,m steps and cut into 64-step (1.6\,km) windows:
+1{,}597 validation and 3{,}063 test windows (21 and 20 lines). The 20 test segments, with windows every
+50\,m, form the flights used for tracking. Training imagery is 2016/2018/2020; test imagery is 2022; the
+onboard reference map for matching is 2020.
+
+\begin{figure}[t]
+\centering
+\begin{minipage}{0.3\linewidth}\centering
+\fig{figures/generated/naip_2016.jpg}{\linewidth}{NAIP mosaic}\end{minipage}\hfill
+\begin{minipage}{0.68\linewidth}\centering
+\fig{figures/generated/geophysics.png}{\linewidth}{geophysics grids}\end{minipage}
+\caption{Left: the 2016 NAIP mosaic of the study area. Right: magnetic RMI, $g_D$ and $G_{DD}$ grids
+built from training lines only, with validation (green) and test (black) lines overlaid.}
+\label{fig:data}
+\end{figure}
+
+\paragraph{Training samples.} Training samples are generated on the fly at random continuous positions:
+a synthetic 64-step track with random heading and slight curvature is sampled from the training maps,
+with sensor noise, offsets and gain errors (magnetics $\sigma=2$\,nT, offset 20\,nT; $g_D$ 0.3\,mGal;
+$G_{DD}$ 5\,E), and an image crop from a random training year with rotation ($\pm10^\circ$), scale
+($\pm15\%$), colour and blur augmentation. Each modality is dropped with probability 0.15.
+
+%======================================================================
+\section{The mid-term model}\label{sec:model}
+\paragraph{Encoders.} The image encoder is a DINOv2 ViT-S/14~\cite{dosovitskiy2021vit,oquab2023dinov2},
+fine-tuned with layer-wise learning-rate decay; its CLS token is mapped to $\mu_v$ and $\log\sigma^2_v$
+($d=256$). The magnetic and gravity encoders are 1D-CNNs (four convolutional blocks, global mean/max
+pooling, MLP) over the profile, its first difference, the height above ground and the heading.
+
+\paragraph{UDML core.} For modalities $k\in\{v,m,g\}$ with diagonal Gaussians $(\mu_k,\sigma_k^2)$:
+\begin{align}
+\rho_k &= \tfrac{1}{d}\textstyle\sum_i \sigma_{k,i}^2 &&\text{(noise-aware uncertainty)}\\
+\alpha_k &= \tfrac{1}{|\mathcal{A}|-1}\textstyle\sum_{j\in\mathcal{A}, j\neq k} A_{jk} &&\text{(dependency: attention $k$ receives)}\\
+w_k &= \operatorname{softmax}_{k\in\mathcal{A}}\left(\log\alpha_k - \log\rho_k\right) &&\text{(fusion weights)}
+\end{align}
+where $A$ is the attention matrix of one multi-head attention layer over the three modality tokens and
+$\mathcal{A}$ the available modalities. The fused feature is $z=\sum_k w_k \hat z_k$ with
+$\hat z_k=\mu_k+\sigma_k\epsilon$ during training and $\hat z_k=\mu_k$ at test time.
+
+\paragraph{Heads and loss.} The regression head outputs normalised easting/northing and an isotropic
+log-variance, trained with a Gaussian negative log-likelihood. The classification head outputs logits
+over 250\,m map cells, trained with soft labels (Gaussian over neighbouring cells, $\sigma=0.5$ cell).
+The same head is applied to each $\mu_k$ alone (auxiliary outputs, weight 0.3) to report per-modality
+accuracy and to keep every encoder trained; a small KL term ($\beta=10^{-4}$) regularises the latents.
+Training uses AdamW, bf16, batch 64, 30 epochs of 50k samples on one RTX 5070 Ti; the three
+regression stages follow the mid-term timeline (vision, $+$magnetometry, $+$gravimetry).
+
+%======================================================================
+\section{Coarse-to-fine localisation}\label{sec:c2f}
+\paragraph{Coarse.} The network's cell probabilities (classifier) or a Gaussian around its regressed
+position (regressor) form a prior over 250\,m cells; optionally multiplied by a retrieval prior.
+
+\paragraph{Retrieval.} The 2020 reference map is cut into 224\,px tiles every 100\,m and embedded by
+the slide-6 ViT ([CLS, mean patch] $\to$ MLP $\to$ unit vector). We evaluate zero-shot DINOv2 features
+(AnyLoc-style~\cite{keetha2023anyloc}) and contrastive fine-tuning (Sample4Geo-style~\cite{deuser2023sample4geo}):
+symmetric InfoNCE between augmented training-year queries and reference tiles, with half of the
+batches drawn from one 2\,km neighbourhood (hard negatives) and pairs closer than 250\,m excluded as
+negatives. The ViT is initialised from the trained classifier.
+
+\paragraph{Profile matching (TERCOM).} For every position on a 25\,m lattice inside the top-10 cells
+(plus 125\,m margin) and headings $\{-3^\circ,0,3^\circ\}$, the measured 1.6\,km magnetic and gravity
+profiles are compared with the training maps along the dead-reckoned track (1\% drift):
+\begin{equation}
+\log L(p) = -\frac{1}{2\tau}\sum_{c}\sum_{i=1}^{64}\frac{\big(r_{c,i}-\bar r_c\big)^2}{\sigma_c^2},\qquad
+r_{c,i}=y_{c,i}-M_c(p+\Delta_i),
+\end{equation}
+removing each channel's unknown offset $\bar r_c$. The noise levels are calibrated on validation lines
+as the residual between real readings and the map at the true track ($\sigma_\text{mag}=12.6$\,nT,
+$\sigma_{g_D}=0.28$\,mGal, $\sigma_{G_{DD}}=37$\,E); $\tau=4$ accounts for correlated samples. The
+posterior combines $\log L$ with the coarse prior.
+
+\paragraph{Image matching (DSMAC).} The UAV view is simulated from the test-year mosaic with heading
+($\sigma=8^\circ$), scale ($\sigma=7\%$) and camera-tilt (up to $\pm10^\circ$, homography keeping the
+nadir point at the image centre) errors. Around the five best profile-matching hypotheses it is matched
+against the 2020 reference map within 250\,m, with LoFTR~\cite{sun2021loftr} (kornia~\cite{riba2020kornia})
+and a RANSAC similarity transform. A position is reported only if the match has at least 15 inliers;
+otherwise the output is \emph{no fix} and the vehicle continues on its inertial solution.
+
+%======================================================================
+\section{Particle-filter tracking}\label{sec:pf}
+Each held-out segment is flown as a sequence of steps 50\,m apart with 3000 particles~\cite{gordon1993pf,thrun2005probabilistic}:
+\begin{itemize}
+\item \textbf{Motion:} the dead-reckoned displacement with a per-flight heading/scale bias and random drift.
+\item \textbf{Geophysics:} the profile likelihood above over the in-map part of the track, tempered for
+the overlap between consecutive windows and scaled by $g_k=\mathrm{clip}(3w_k,0.25,2)$ from the UDML weights.
+\item \textbf{Image:} LoFTR around the main particle clusters; a confident fix adds a robust Gaussian
+likelihood ($\sigma=5$\,m, outlier floor 0.02, scaled by $g_v$) and seeds 10\% of the particles at the fix.
+\item \textbf{Recovery:} a robust coarse-prior term $\log(1+C\,p_\text{cell})$ that rewards but never
+punishes, and 2\% of particles re-drawn from the prior each step.
+\item \textbf{Estimate:} the weighted mean of the mode holding most weight; systematic resampling when the
+effective sample size drops below $N/2$.
+\end{itemize}
+
+\section{Literature-driven fixes}\label{sec:phase3}
+\begin{itemize}
+\item \textbf{Balanced training.} OGM~\cite{peng2022ogm}: each step, a modality whose auxiliary loss is
+lower than the others' mean by $\delta$ has its encoder gradients scaled by $1-\tanh(0.1\,\delta)$;
+vision is additionally dropped 40\% of the time.
+\item \textbf{Sequence prior.} SeqSLAM-style~\cite{milford2012seqslam,garg2021seqnet}: the coarse
+log-priors of the last five frames are averaged after shifting by the dead-reckoned displacement.
+\item \textbf{Colour alignment.} Each query crop is given the reference map's per-channel mean and
+standard deviation (only image statistics, so available onboard).
+\item \textbf{Dead-reckoning bias estimation.} Each particle carries a heading and scale bias that
+corrects its motion (the augmented-state idea of marginalised-PF magnetic navigation~\cite{canciani2016absolute,magnavjl}).
+\end{itemize}
+
+%======================================================================
+\section{Results}\label{sec:results}
+All numbers are on the held-out test lines with 2022 imagery unless stated otherwise.
+
+\subsection{The mid-term model on its own}
+\input{generated/tab_baseline.tex}
+\input{generated/tab_udml.tex}
+
+\Cref{tab:baseline} shows the central limitation of direct regression: on validation lines with
+training-year imagery the full model reaches \ResvisionmaggravValMedian{}, but with held-out 2022
+imagery the median rises to \ResvisionmaggravMedian{}, with a heavy tail. This is consistent with the
+known behaviour of pose regression, which interpolates between memorised appearances rather than
+measuring position~\cite{sattler2019limits}. The magnetic and gravity encoders on their own localise
+only to kilometres: a 1.6\,km profile along one direction is ambiguous, and the neural encoders do not
+learn the map-matching that explicit profile correlation performs.
+
+\Cref{tab:udml} shows that the UDML weights concentrate on vision (about 0.95). When the image is
+corrupted, weight moves to the geophysical modalities, as intended; when a profile is corrupted, its
+weight does not consistently decrease. In the trained models, UDML therefore behaves mostly as
+``trust vision'', which motivated the balanced training of \cref{sec:phase3}.
+
+\subsection{Coarse-to-fine, one frame at a time}
+\input{generated/tab_c2f_stages.tex}
+\input{generated/tab_c2f_fix.tex}
+
+Each stage of \cref{tab:c2fstages} narrows the position: from a few hundred metres (coarse) to about
+100\,m (TERCOM with both profiles; each profile alone gives 130--140\,m) to about a metre (LoFTR).
+Given a hypothesis at the truth, LoFTR is within 10\,m for 95--97\% of the windows despite the year
+difference and the simulated camera errors. The limiting factor is the coarse step: when the true
+cell is not among the candidates, no later stage recovers. \Cref{tab:c2ffix} shows that the matcher's
+confidence identifies these cases: every reported fix is within 10\,m and wrong fixes are absent; the
+remaining frames are reported as \emph{no fix}.
+
+\input{generated/tab_matchers.tex}
+\input{generated/tab_retrieval.tex}
+\input{generated/tab_single_shot.tex}
+
+\todo{interpret \cref{tab:matchers,tab:retrieval,tab:singleshot} (phase 2 and 3 single-shot results).}
+
+\subsection{Tracking over flights}
+\input{generated/tab_track.tex}
+
+\begin{figure}[t]
+\centering
+\fig{figures/generated/track_full.png}{0.85\linewidth}{particle-filter track (phase 2)}
+\caption{A held-out test flight: true track (green) and particle-filter estimate (red) over the 2022
+imagery, and the error per step with image fixes marked.}
+\label{fig:track}
+\end{figure}
+
+\todo{interpret \cref{tab:track} and \cref{fig:track}: overall accuracy, lost flights, the contribution of
+each modality, UDML versus equal weights, and the phase-3 fixes.}
+
+\subsection{Comparison with published results}
+Published systems report, on real flights, below 8\,m average over 0.85\,km~\cite{goforth2019gps},
+below 1\,m RMSE over 303\,m~\cite{patel2020visual}, below 10\,m~\cite{swapf2025}, about 13\,m for
+magnetic-anomaly navigation~\cite{canciani2016absolute}, and within about 20\,m without an initial
+pose~\cite{foundloc2023}. Our numbers are in the same range or better, but the comparison is not
+like-for-like: our query images are simulated from orthophotos of the same programme as the
+reference map, our dead reckoning is simulated, and we evaluate one 250\,km$^2$ region. A fair claim
+requires the evaluation on real-flight benchmarks proposed in \cref{sec:future}.
+
+%======================================================================
+\section{Limitations}
+\begin{itemize}
+\item \textbf{Simulated camera.} Queries are warped orthophoto crops; real imagery adds motion blur,
+lens distortion, relief displacement and different illumination.
+\item \textbf{Simulated motion.} Dead reckoning is the true displacement plus modelled bias and drift,
+not an IMU/visual-odometry solution.
+\item \textbf{One region and one survey.} All results are from Mountain Pass; the geophysical maps exist
+only where surveys were flown, and the gravity gradiometer used is not small-UAV-mountable.
+\item \textbf{Absolute accuracy.} The reference imagery and the survey positions are themselves accurate
+to about a metre, so sub-metre absolute accuracy cannot be demonstrated with this data.
+\end{itemize}
+
+\section{Future work}\label{sec:future}
+\begin{itemize}
+\item Evaluate the vision chain on real UAV footage: Goforth and Lucey's dataset~\cite{goforth2019gps},
+UAV-VisLoc~\cite{uavvisloc2024} and AnyVisLoc~\cite{anyvisloc2025}; a brute-force LoFTR baseline over the
+whole map.
+\item Replace simulated dead reckoning with an IMU model (bias, random walk) and visual odometry, and
+measure accuracy across image-matching outages.
+\item A second surveyed region, and a public release of the co-registered dataset.
+\item Fast, low-power deployment on an FPGA (next semester).
+\end{itemize}
+
+\section{Conclusion}
+The mid-term architecture is implemented and trained end to end on a real multimodal survey. On its
+own, direct coordinate regression does not generalise across imagery years, and the UDML weights
+collapse onto vision. Used as the coarse stage of a coarse-to-fine system, together with profile
+matching of real magnetic and gravity readings and learned image matching against an onboard map, the
+same model yields confident single-frame fixes at metre level with no wrong fixes, and continuous
+tracking with a particle filter. The open problems are the realism of the simulation and making the
+multimodal fusion itself, not only the refinement, benefit from the geophysical sensors.
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\end{document}

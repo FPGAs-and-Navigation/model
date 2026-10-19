@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Single-shot coarse-to-fine pipeline on the 3{,}063 test windows: median error after each stage, and the image matcher's error when given a hypothesis at the true position.}
+\label{tab:c2fstages}
+\begin{adjustbox}{max width=\linewidth}
+\begin{tabular}{lrrrrrr}
+\toprule
+Prior & Right cell in top-10 & Coarse & + TERCOM mag & + TERCOM grav & + TERCOM both & LoFTR at truth \\
+\midrule
+Vision regressor & 56\% & 372\,m & 141\,m & 135\,m & 97.0\,m & 1.0\,m \\
+V+M regressor & 55\% & 391\,m & 142\,m & 135\,m & 97.4\,m & 1.6\,m \\
+V+M+G regressor & 57\% & 360\,m & 140\,m & 126\,m & 93.8\,m & 1.6\,m \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\end{table}

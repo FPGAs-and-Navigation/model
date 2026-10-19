@@ -4,3 +4,13 @@ __pycache__/
 data/
 runs/
 *.egg-info/
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.bbl
+report/*.blg
+report/*.fls
+report/*.fdb_latexmk
+report/*.lof
+report/*.lot
