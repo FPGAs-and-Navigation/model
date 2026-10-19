@@ -74,7 +74,8 @@ def phase3(cfg):
                                ("coarse", "p3_color", "+ colour alignment"),
                                ("coarse", "p3_top30", "+ top-30 candidate cells"),
                                ("coarse", "p3_all", "+ all three"),
-                               ("coarse_balanced", "p3_all", "balanced classifier + all three")):
+                               ("coarse_balanced", "p3_all", "balanced classifier + all three"),
+                               ("coarse", "p3_retrieval_only", "no slide-6 model: retrieval only")):
         r = load(runs / run_dir / f"c2f_{tag}_metrics.json")
         if r and "final (fix / no fix)" in r:
             f = r["final (fix / no fix)"]
@@ -92,7 +93,8 @@ def phase3(cfg):
         ("balanced_equal", "balanced classifier, equal weights"),
         ("balanced_magnoise_udml", "balanced, noisy magnetometer (2σ), UDML weights"),
         ("balanced_magnoise_equal", "balanced, noisy magnetometer (2σ), equal weights"),
-        ("best", "**best: balanced + bias estimation + colour alignment**")))
+        ("best", "**best: balanced + bias estimation + colour alignment**"),
+        ("retrieval_only", "no slide-6 model: retrieval prior, equal weights")))
     lines += tl
     data.update(td)
     (out / "report.md").write_text("\n".join(lines) + "\n")

@@ -61,4 +61,10 @@ run "$OUT/track_balanced_magnoise_equal.json" $T $BAL --retrieval $RETR $O --tag
 run "$OUT/track_best.json"            $T $BAL --retrieval $RETR $O --tag best \
     --set track.estimate_bias=true img.color_align=instance
 
+# 4. Without the slide-6 model: retrieval alone as the coarse step (the network still runs only to supply
+#    UDML weights to the filter, which equal weights replace here).
+run runs/coarse/c2f_p3_retrieval_only_metrics.json $C $COARSE --prior none --retrieval $RETR --tag p3_retrieval_only
+run "$OUT/track_retrieval_only.json"  $T $COARSE --prior none --retrieval $RETR $O --tag retrieval_only \
+    --weights equal --set track.estimate_bias=true
+
 $PY -m btp.phase2_report --phase3

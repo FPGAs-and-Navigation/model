@@ -206,7 +206,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ckpt", help="slide-6 checkpoint (classifier head preferred)")
     ap.add_argument("--retrieval", default=None)
-    ap.add_argument("--prior", default="fused", choices=["fused", *MODALITIES])
+    ap.add_argument("--prior", default="fused", choices=["fused", "none", *MODALITIES],
+                    help="'none': no slide-6 model prior (retrieval only, if given)")
     ap.add_argument("--weights", default="udml", choices=["udml", "equal"])
     ap.add_argument("--no-mag", action="store_true")
     ap.add_argument("--no-grav", action="store_true")
@@ -265,7 +266,8 @@ def main():
             for batch in DataLoader(Subset(ds_model, idx), 64, num_workers=4):
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     out = model(to_dev(batch, dev))
-                lp = log_prior(out, centers, data.ext, a.prior, cfg["coarse"]["cell"])
+                lp = (log_prior(out, centers, data.ext, a.prior, cfg["coarse"]["cell"]) if a.prior != "none"
+                      else np.full((len(batch["avail"]), len(centers)), -np.log(len(centers))))
                 if retriever is not None:
                     lp = lp + retriever.log_prior(batch["img"])
                     lp -= np.logaddexp.reduce(lp, axis=1, keepdims=True)

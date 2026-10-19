@@ -192,7 +192,8 @@ def main():
                          ("coarse", "p3_color", "\\quad + colour alignment"),
                          ("coarse", "p3_top30", "\\quad + top-30 cells"),
                          ("coarse", "p3_all", "\\quad + all three"),
-                         ("coarse_balanced", "p3_all", "Balanced classifier + all three")):
+                         ("coarse_balanced", "p3_all", "Balanced classifier + all three"),
+                         ("coarse", "p3_retrieval_only", "No slide-6 model: retrieval only")):
         r, f = fix_stats(runs / d, tag)
         if r and f:
             rows.append([name, pct(r["topk_hit_rate"]), pct(f["fix_rate"]), f"{100 * f['wrong_fix_rate']:.2f}\\%",
@@ -217,7 +218,8 @@ def main():
                   ("phase3", "balanced_equal", "\\quad equal weights"),
                   ("phase3", "balanced_magnoise_udml", "\\quad noisy mag, UDML"),
                   ("phase3", "balanced_magnoise_equal", "\\quad noisy mag, equal"),
-                  ("phase3", "best", "\\textbf{Best: balanced + bias est.\\ + colour alignment}"))
+                  ("phase3", "best", "\\textbf{Best: balanced + bias est.\\ + colour alignment}"),
+                  ("phase3", "retrieval_only", "No slide-6 model: retrieval prior, equal weights"))
     for ph, tag, name in track_rows:
         r = load(runs / ph / f"track_{tag}.json")
         if not r:
