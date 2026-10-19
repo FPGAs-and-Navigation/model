@@ -34,6 +34,20 @@ Test numbers on 300 windows with 2022 imagery, using a mid-training snapshot of 
 
 The remaining error is the tail where the coarse step misses, which is what the cell classifier is for.
 
+## Phase 2: the combined system (`btp/track.py`)
+The slide-6 model stays at the core, and three published ideas are wrapped around it:
+- **Learned image matching (`btp/matchers.py`):** LoFTR replaces NCC.
+  - At the true position with realistic camera views (±8° heading, ±7% altitude, ±10° tilt), LoFTR is 95% within 10 m; NCC is 30%.
+- **Retrieval (`btp/retrieval.py`, `btp/train_retrieval.py`):** the slide-6 ViT plus a projection head embeds the 2020 reference map.
+  - It is fine-tuned Sample4Geo-style, with neighbourhood hard negatives.
+  - Its prior multiplies the UDML classifier's prior.
+- **Particle filter over the flight:** at every step, particles move by dead reckoning.
+  - They are weighted by TERCOM profile matching (scaled by the UDML weights w_m and w_g).
+  - A confident LoFTR fix re-weights them (scaled by w_v).
+  - A robust coarse-prior term and re-injection let a lost filter recover.
+
+`scripts/phase2.sh` runs every evaluation and ablation, then writes `runs/phase2/report.md`.
+
 ## Data
 - **Imagery:** NAIP 0.6 m imagery for 2016, 2018, 2020 and 2022. It is resampled to 1.25 m/px; one crop is 224 px, about 280 m across.
 - **Geophysics:** the USGS 2016 HeliFALCON survey (DOI 10.5066/P9SQV3SB):
@@ -58,6 +72,10 @@ All data is put in one UTM 11N (EPSG:26911) frame.
 | `btp/evaluate.py` | test metrics, per-modality errors, ablations, weight response to noise |
 | `btp/simulate.py` | flies a held-out line and plots the true vs predicted track |
 | `btp/c2f.py` | coarse → TERCOM → DSMAC pipeline with per-stage errors |
+| `btp/matchers.py` | NCC / LoFTR / LightGlue matchers, camera-view simulation, benchmark |
+| `btp/retrieval.py`, `btp/train_retrieval.py` | reference-map retrieval (zero-shot and fine-tuned) |
+| `btp/track.py` | particle filter over held-out flights |
+| `btp/phase2_report.py` | collects everything into `runs/phase2/report.md` |
 | `configs/base.yaml` | all settings; override with `--set key.sub=value` |
 | `scripts/` | `deploy.sh` (here → kratos), `sync_data.sh` (CoW data copy), `train_staged.sh` |
 

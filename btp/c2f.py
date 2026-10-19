@@ -63,13 +63,18 @@ class ProfileMatcher:
         self.mask = g["mask_mag"] & g["mask_grav"]
         self.sigma = None
 
-    def sample(self, e, n):
-        """Map values at points; invalid where any point leaves the maps."""
+    def sample_points(self, e, n):
+        """Map values at points and, per point, whether it is inside the mapped area."""
         r, c = self.d.ext.to_pix(e, n, self.res)
         H, W = self.mask.shape
         ri, ci = np.clip(r.astype(int), 0, H - 1), np.clip(c.astype(int), 0, W - 1)
         inside = (r >= 0) & (c >= 0) & (r < H) & (c < W) & self.mask[ri, ci]
-        return {k: bilinear(m, r, c) for k, m in self.maps.items()}, inside.all(-1)
+        return {k: bilinear(m, r, c) for k, m in self.maps.items()}, inside
+
+    def sample(self, e, n):
+        """Map values at points; invalid where any point leaves the maps."""
+        vals, inside = self.sample_points(e, n)
+        return vals, inside.all(-1)
 
     def calibrate(self, w):
         """Noise level per channel: residual std between real readings and the map at the true track."""
@@ -200,6 +205,7 @@ def main():
     ap.add_argument("--retrieval", default=None, help="retrieval checkpoint; its prior multiplies the model's")
     ap.add_argument("--set", nargs="*", default=[], help="overrides for the coarse/tercom/dsmac settings")
     ap.add_argument("--limit", type=int, default=None, help="evaluate only this many windows")
+    ap.add_argument("--tag", default=None, help="name for the output files (default: the prior)")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
     cfg = ck["cfg"]
@@ -227,7 +233,7 @@ def main():
     print("profile noise (map vs real readings): " + ", ".join(f"{k} {v:.2f}" for k, v in sig.items()))
     dsmac = ImageMatcher(data, cfg, year)
     retriever = Retriever(a.retrieval, data, cfg) if a.retrieval else None
-    tag = a.prior + ("+retrieval" if retriever else "")
+    tag = a.tag or a.prior + ("+retrieval" if retriever else "")
     rng = np.random.default_rng(0)
 
     rows = []

@@ -121,11 +121,13 @@ def drop_near_holdout(train, held):
 def windows(grav, mag, split, L, step, stride):
     """Resample each held-out segment to `step` m and cut L-step windows ending every `stride` steps."""
     out = {k: [] for k in ("e", "n", "heading", "mag", "h_mag", "gD", "GDD", "h_grav", "line",
-                                 "track_e", "track_n")}
+                                 "track_e", "track_n", "seg")}
+    seg_id = 0
     mag_s = mag[mag.split == split]
     for line, g in grav[grav.split == split].groupby("line", sort=False):
         m_line = mag_s[mag_s.base == line // 10]
         for seg in segments(g):
+            seg_id += 1                            # consecutive windows of one segment form a flight
             s = np.concatenate([[0], np.cumsum(np.hypot(np.diff(seg.e.values), np.diff(seg.n.values)))])
             if s[-1] < L * step or len(m_line) < 2:
                 continue
@@ -154,7 +156,8 @@ def windows(grav, mag, split, L, step, stride):
                 out["h_grav"].append(r["h"][sl]); out["line"].append(line)
                 # Track relative to the current position (what onboard dead reckoning provides).
                 out["track_e"].append(r["e"][sl] - r["e"][k]); out["track_n"].append(r["n"][sl] - r["n"][k])
-    return {k: np.asarray(v, dtype=np.int32 if k == "line" else np.float32) for k, v in out.items()}
+                out["seg"].append(seg_id)
+    return {k: np.asarray(v, dtype=np.int32 if k in ("line", "seg") else np.float32) for k, v in out.items()}
 
 
 def qc_plot(fn, grids, ext, grav, mag):

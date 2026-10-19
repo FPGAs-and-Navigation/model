@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The midterm timeline as runs: vision only -> + magnetometry -> + gravimetry (lat/lon regression),
-# then the coarse cell classifier that feeds the coarse-to-fine pipeline (btp/c2f.py).
+# then the coarse cell classifier that feeds the coarse-to-fine pipeline (btp/c2f.py),
+# then phase 2: retrieval fine-tuning and the full evaluation (scripts/phase2.sh).
 # Each run is evaluated on the held-out test lines, flown in simulation and run through c2f.
 # Re-runnable: finished stages are skipped and an interrupted one resumes from last.pt.
 # Extra arguments are passed to btp.train as --set overrides (e.g. train.epochs=10).
@@ -35,3 +36,16 @@ for spec in "${STAGES[@]}"; do
   done
   date '+%F %T' > "runs/$name/DONE"
 done
+
+# Phase 2: retrieval fine-tuning (starts from the classifier's ViT), then all phase-2 evaluations.
+if [ ! -f runs/retrieval/DONE ]; then
+  echo "=== retrieval $(date '+%F %T') ===" | tee -a runs/staged.log
+  $PY -m btp.train_retrieval --init runs/coarse/best.pt 2>&1 | grep --line-buffered -v Warning | tee -a runs/retrieval.log
+  date '+%F %T' > runs/retrieval/DONE
+fi
+if [ ! -f runs/phase2/DONE ]; then
+  echo "=== phase2 $(date '+%F %T') ===" | tee -a runs/staged.log
+  scripts/phase2.sh 2>&1 | tee -a runs/phase2.log
+  date '+%F %T' > runs/phase2/DONE
+  grep -A200 "^# Phase 2 results" runs/phase2/report.md >> runs/staged.log || true
+fi

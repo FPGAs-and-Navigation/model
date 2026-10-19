@@ -51,13 +51,30 @@ tercom:
 dsmac:
   ref_year: 2020           # onboard reference map (older than the test imagery)
   radius: 250.0            # m searched around each hypothesis
-  rot_sigma: 2.0           # deg, heading error of the query image
-  scale_sigma: 0.03        # altitude error of the query image
-  tilt_deg: 0.0            # camera pitch/roll (perspective); realistic runs use ~10
+  rot_sigma: 8.0           # deg, heading error of the query image
+  scale_sigma: 0.07        # altitude error of the query image
+  tilt_deg: 10.0           # camera pitch/roll (perspective); the 'easy' runs set 0
   method: loftr            # ncc | loftr | lightglue  (see python -m btp.matchers)
   # Below this confidence the profile-matching estimate is kept
   # (ncc: peak-to-sidelobe ratio; loftr/lightglue: RANSAC inliers). Set from the val benchmark.
   min_score: {ncc: 6.0, loftr: 15, lightglue: 8}
+
+track:                     # particle filter over held-out flights (btp/track.py)
+  particles: 3000
+  motion_sigma: 2.0        # m per step, added to the dead-reckoned displacement
+  drift: 0.02              # fraction of step length, random dead-reckoning error
+  dr_heading_bias_deg: 1.0 # per-flight systematic heading error of dead reckoning
+  dr_scale_bias: 0.01      # per-flight systematic scale error
+  geo_temper: 64.0         # consecutive windows share most samples, so each update is weak
+  prior_weight: 0.05       # coarse-prior log-probability added per step
+  reinject: 0.02           # fraction of particles re-drawn from the coarse prior per step
+  image_every: 1
+  image_radius_min: 60.0   # m
+  image_sigma: 5.0         # m, image-fix likelihood width
+  image_outlier: 0.02      # robust floor of the image likelihood
+  image_seed: 0.1          # fraction of particles placed at a confident image fix
+  gain_min: 0.25           # UDML gain K*w_k clipped to [gain_min, gain_max]
+  gain_max: 2.0
 
 retrieval:
   stride: 100.0            # m between reference-map tiles in the database

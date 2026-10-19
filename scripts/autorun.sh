@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 TAG="# btp-train"
 
-uninstall() { crontab -l 2>/dev/null | grep -v "$TAG" | crontab -; }
+uninstall() { crontab -l 2>/dev/null | grep -v "# btp-" | crontab -; }   # also the phase-2 entry
 case "${1:-}" in
   --install)
     uninstall
@@ -43,7 +43,7 @@ fi
 pending=0
 for d in runs/*/; do
   d="${d%/}"
-  [ -f "$d/DONE" ] || continue
+  [ -f "$d/DONE" ] && [ -f "$d/test_metrics.json" ] || continue    # localizer runs only
   if [ -f "data/processed/naip_${TEST_YEAR}.npy" ]; then
     if ! grep -q "\"imagery_year\": ${TEST_YEAR}" "$d/test_metrics.json" 2>/dev/null; then
       log "re-evaluating $d on $TEST_YEAR imagery"
