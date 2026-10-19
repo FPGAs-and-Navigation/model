@@ -1,0 +1,52 @@
+# Paths are relative to the repo root (~/BTP_impl on kratos).
+raw_dir: data/raw
+data_dir: data/processed
+run_dir: runs
+
+# Which modalities the model uses. Staged as in the midterm timeline:
+#   [vision] -> [vision, mag] -> [vision, mag, grav]
+modalities: [vision, mag, grav]
+train_years: [2016, 2018, 2020]
+test_year: 2022            # held-out imagery year (falls back to the first train year if missing)
+
+grid_res: 25.0             # m, geophysics grid and sampling-cell size
+img:
+  res: 1.25                # m/px of the processed NAIP mosaics (20 px per grid cell)
+  size: 224                # ViT input
+  window: 320              # px read around the position before rotate/scale/crop
+  scale_jitter: 0.15       # +-15 % footprint, i.e. altitude
+  rot_jitter: 10.0         # degrees, heading error
+seq:
+  len: 64                  # samples in a sensor profile
+  step: 25.0               # m between samples (64 x 25 m = 1.6 km of history)
+  speed_jitter: 0.1
+  turn_sigma_deg: 0.5      # random-walk heading wobble per step on synthetic tracks
+
+# Sensor noise added to synthetic training profiles (physical units).
+noise:
+  mag: {sigma: 2.0, offset: 20.0, gain: 0.05}      # nT
+  gD:  {sigma: 0.3, offset: 2.0,  gain: 0.05}      # mGal
+  GDD: {sigma: 5.0, offset: 10.0, gain: 0.05}      # Eotvos
+  height: {sigma: 3.0}                             # m
+
+model:
+  vit: vit_small_patch14_dinov2.lvd142m
+  pretrained: true
+  dim: 256                 # latent size of each (mu, Sigma)
+  attn_heads: 4
+
+train:
+  batch: 64
+  epochs: 30
+  samples_per_epoch: 50000
+  lr_vit: 1.0e-4
+  lr: 1.0e-3
+  layer_decay: 0.75
+  weight_decay: 0.05
+  warmup_steps: 1000
+  workers: 16
+  mod_dropout: 0.15        # per-modality drop probability (at least one is always kept)
+  aux_weight: 0.3
+  kl_beta: 1.0e-4
+  val_stride: 4            # steps between validation windows on a held-out line
+  seed: 0
