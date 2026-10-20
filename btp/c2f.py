@@ -186,11 +186,12 @@ class ImageMatcher:
         self.fn = matchers.build(self.c["method"], dev)
         self.min_score = self.c["min_score"][self.c["method"]]
 
-    def gray(self, img, r0, c0, side):
+    def window(self, img, r0, c0, side):
+        """RGB float window of the mosaic, or None if it leaves the map."""
         H, W = img.shape[:2]
         if r0 < 0 or c0 < 0 or r0 + side > H or c0 + side > W:
             return None
-        return np.asarray(img[r0:r0 + side, c0:c0 + side, :3], dtype=np.float32).mean(-1)
+        return np.asarray(img[r0:r0 + side, c0:c0 + side, :3], dtype=np.float32)
 
     def query_image(self, e, n, rng):
         """The UAV's view: test-year imagery with heading, altitude and tilt errors."""
@@ -203,7 +204,7 @@ class ImageMatcher:
         rgb = np.asarray(self.query[r0:r0 + win, c0:c0 + win, :3])
         if self.d.cfg["img"].get("color_align", "none") == "instance":
             rgb = self.d.align_color(rgb)
-        g = rgb.astype(np.float32).mean(-1)
+        g = rgb.astype(np.float32)
         return matchers.simulate_view(g, self.size, rng, self.c["rot_sigma"], self.c["scale_sigma"],
                                       self.c.get("tilt_deg", 0))
 
@@ -213,10 +214,10 @@ class ImageMatcher:
         side = self.size + 2 * rad
         r, c = self.d.ext.to_pix(e, n, self.res)
         r0, c0 = int(round(r)) - side // 2, int(round(c)) - side // 2
-        ref = self.gray(self.ref, r0, c0, side)
+        ref = self.window(self.ref, r0, c0, side)
         if ref is None:
             return e, n, -1.0
-        x, y, conf = self.fn(q, ref)
+        x, y, conf = matchers.call(self.fn, q, ref)
         ext = self.d.ext
         return ext.x0 + (c0 + x) * self.res, ext.y1 - (r0 + y) * self.res, float(conf)
 

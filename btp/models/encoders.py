@@ -1,6 +1,7 @@
 """Dedicated per-modality encoders, each producing a diagonal Gaussian (mu, log sigma^2)."""
 import timm
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 LOGVAR_RANGE = (-8.0, 8.0)
@@ -50,7 +51,7 @@ class ProfileEncoder(nn.Module):
         self.head = GaussianHead(512, dim)
 
     def forward(self, x):
-        dx = torch.diff(x, dim=-1, prepend=x[..., :1])
+        dx = F.pad(x[..., 1:] - x[..., :-1], (1, 0))   # = torch.diff(prepend=x[..., :1]), ONNX-exportable
         h = self.conv(torch.cat([x, dx], 1))
         h = torch.cat([h.mean(-1), h.amax(-1)], 1)
         return self.head(self.mlp(h))

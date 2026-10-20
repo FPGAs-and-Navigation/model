@@ -114,8 +114,45 @@ class LightGlue:
         return fit_similarity(kq.cpu().numpy()[idx[:, 0]], kr.cpu().numpy()[idx[:, 1]], q.shape)
 
 
+class XFeat:
+    """XFeat (Potje et al., CVPR 2024): a CPU-friendly detector/descriptor. Unlike LoFTR, the reference
+    map's features do not depend on the query, so onboard they can be precomputed offline.
+    `star=True` uses its semi-dense matching (XFeat*), which is slower but denser."""
+
+    def __init__(self, dev="cuda", top_k=1024, ref_top_k=4096, star=False):
+        self.xf = torch.hub.load("verlab/accelerated_features", "XFeat", pretrained=True, top_k=top_k,
+                                 trust_repo=True)
+        self.xf.dev = torch.device(dev)
+        self.xf.net = self.xf.net.to(dev).eval()
+        self.dev, self.top_k, self.ref_top_k, self.star = dev, top_k, ref_top_k, star
+
+    @torch.no_grad()
+    def __call__(self, q, ref):
+        tq, tr = to_tensor(q, self.dev), to_tensor(ref, self.dev)
+        if self.star:
+            kq, kr = self.xf.match_xfeat_star(tq, tr, top_k=self.ref_top_k)
+        else:
+            a = self.xf.detectAndCompute(tq, top_k=self.top_k)[0]
+            b = self.xf.detectAndCompute(tr, top_k=self.ref_top_k)[0]
+            i, j = self.xf.match(a["descriptors"], b["descriptors"], min_cossim=0.82)
+            kq, kr = a["keypoints"][i].cpu().numpy(), b["keypoints"][j].cpu().numpy()
+        return fit_similarity(np.asarray(kq, np.float32), np.asarray(kr, np.float32), q.shape)
+
+
 def build(method, dev="cuda"):
-    return {"ncc": NCC, "loftr": lambda: LoFTR(dev), "lightglue": lambda: LightGlue(dev)}[method]()
+    def ldsmac():
+        from .edge.ldsmac import Matcher
+        return Matcher(config.ROOT / "runs/edge/ldsmac.pt", dev)
+    return {"ncc": NCC, "loftr": lambda: LoFTR(dev), "lightglue": lambda: LightGlue(dev),
+            "xfeat": lambda: XFeat(dev), "xfeat_star": lambda: XFeat(dev, star=True),
+            "ldsmac": ldsmac}[method]()
+
+
+def call(fn, q, ref):
+    """Run a matcher on RGB float images; grayscale matchers get the channel mean."""
+    if getattr(fn, "rgb", False):
+        return fn(np.clip(q, 0, 255).astype(np.uint8), np.clip(ref, 0, 255).astype(np.uint8))
+    return fn(q.mean(-1) if q.ndim == 3 else q, ref.mean(-1) if ref.ndim == 3 else ref)
 
 
 # ---------------------------------------------------------------- query simulation
@@ -151,6 +188,8 @@ def main():
     ap.add_argument("--methods", default="ncc,loftr,lightglue")
     ap.add_argument("--offset", type=float, default=100.0, help="m between true position and search centre")
     ap.add_argument("--out", default="runs/phase2/matchers")
+    ap.add_argument("--scale", type=float, default=1.0, help="downsample both images before matching (cheaper)")
+    ap.add_argument("--radius", type=float, default=None, help="search radius in m (default dsmac.radius)")
     a = ap.parse_args()
     cfg = config.load("configs/base.yaml", a.set)
     d = cfg["dsmac"]
@@ -159,7 +198,7 @@ def main():
     w = HeldOutSet(data, a.split, year).w
     idx = np.linspace(0, len(w["e"]) - 1, a.n).astype(int)
     res, size = cfg["img"]["res"], cfg["img"]["size"]
-    rad = int(d["radius"] / res)
+    rad = int((a.radius or d["radius"]) / res)
     query_img, ref_img = data.image(year), data.image(d["ref_year"])
     rng = np.random.default_rng(0)
 
@@ -167,7 +206,7 @@ def main():
     for i in idx:
         e, n = float(w["e"][i]), float(w["n"][i])
         r, c = data.ext.to_pix(e, n, res)
-        win = np.asarray(query_img[int(r) - 160:int(r) + 160, int(c) - 160:int(c) + 160, :3], np.float32).mean(-1)
+        win = np.asarray(query_img[int(r) - 160:int(r) + 160, int(c) - 160:int(c) + 160, :3], np.float32)
         q = simulate_view(win, size, rng, d["rot_sigma"], d["scale_sigma"], d.get("tilt_deg", 0))
         # Search region centred on a hypothesis `offset` m from the truth in a random direction.
         th = rng.uniform(0, 2 * np.pi)
@@ -175,8 +214,8 @@ def main():
         hr, hc = data.ext.to_pix(he, hn, res)
         side = size + 2 * rad
         r0, c0 = int(round(hr)) - side // 2, int(round(hc)) - side // 2
-        ref = np.asarray(ref_img[r0:r0 + side, c0:c0 + side, :3], np.float32).mean(-1)
-        if ref.shape != (side, side):
+        ref = np.asarray(ref_img[r0:r0 + side, c0:c0 + side, :3], np.float32)
+        if ref.shape[:2] != (side, side):
             continue
         cases.append((e, n, q, ref, r0, c0))
 
@@ -186,7 +225,13 @@ def main():
         fn = build(m)
         t0, errs, confs = time.time(), [], []
         for e, n, q, ref, r0, c0 in cases:
-            x, y, conf = fn(q, ref)
+            if a.scale != 1:
+                qs = cv2.resize(q, None, fx=a.scale, fy=a.scale, interpolation=cv2.INTER_AREA)
+                rs = cv2.resize(ref, None, fx=a.scale, fy=a.scale, interpolation=cv2.INTER_AREA)
+                x, y, conf = call(fn, qs, rs)
+                x, y = x / a.scale, y / a.scale
+            else:
+                x, y, conf = call(fn, q, ref)
             pe, pn = data.ext.x0 + (c0 + x) * res, data.ext.y1 - (r0 + y) * res
             errs.append(np.hypot(pe - e, pn - n))
             confs.append(conf)
@@ -203,7 +248,10 @@ def main():
               f"wrong p90 {report[m]['conf_wrong_p90']}", flush=True)
     out = config.ROOT / a.out
     out.parent.mkdir(parents=True, exist_ok=True)
+    report.update(scale=a.scale, radius_m=a.radius or d["radius"])
     tag = f"_tilt{report['tilt_deg']}_rot{report['rot_sigma']}"
+    if a.scale != 1 or a.radius or a.offset != 100.0:
+        tag += f"_s{a.scale}_r{a.radius or d['radius']:.0f}_o{a.offset:.0f}"
     with open(f"{out}{tag}.json", "w") as f:
         json.dump(report, f, indent=1)
 

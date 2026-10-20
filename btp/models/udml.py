@@ -26,7 +26,8 @@ class UDML(nn.Module):
         tok = self.norm(mu + self.mod_emb[:K])
         _, A = self.attn(tok, tok, tok, key_padding_mask=~avail, need_weights=True,
                          average_attn_weights=True)            # A[b, query, key]
-        eye = torch.eye(K, dtype=torch.bool, device=mu.device)
+        idx = torch.arange(K, device=mu.device)
+        eye = idx[:, None] == idx[None, :]                     # identity mask (ONNX-friendly)
         A = A.masked_fill(eye, 0) * avail.unsqueeze(-1)        # only other, present queries count
         n_other = (avail.sum(-1, keepdim=True) - 1).clamp(min=1)
         alpha = A.sum(1) / n_other                              # mass received by each key

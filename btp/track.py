@@ -19,6 +19,7 @@ Writes runs/<outdir>/track_<tag>.json (+ per-step CSV and plots of the first fli
 """
 import argparse
 import json
+import time
 
 import numpy as np
 import pandas as pd
@@ -58,6 +59,16 @@ class Filter:
         the particle itself is on the map.
         """
         te, tn = w["track_e"][i], w["track_n"][i]
+        if self.c.get("kernel", "numpy") == "numba":            # fused kernel, same result
+            from .edge.kernels import geo_cost
+            if not hasattr(self, "_maps"):
+                self._maps = np.stack([self.tercom.maps[k] for k in CHANNELS]).astype(np.float32)
+                self._inv = np.array([1 / self.tercom.sigma[k] ** 2 for k in CHANNELS], np.float32)
+            rows, cols = self.tercom.d.ext.to_pix(x[:, 0, None] + te[None], x[:, 1, None] + tn[None],
+                                                  self.tercom.res)
+            y = np.stack([w[k][i] for k in CHANNELS]).astype(np.float32)
+            cost, on_map = geo_cost(self._maps, self.tercom.mask, rows, cols, y, self._inv, 8)
+            return {k: -0.5 * cost[:, j] / self.c["geo_temper"] for j, k in enumerate(CHANNELS)}, on_map
         vals, inside = self.tercom.sample_points(x[:, 0, None] + te[None], x[:, 1, None] + tn[None])
         n_in = inside.sum(-1)
         frac = np.where(n_in >= 8, len(te) / np.maximum(n_in, 1), 0.0)
@@ -98,6 +109,7 @@ class Filter:
 
     def run(self, w, idx, lps, udml_w, q_imgs, dr_bias):
         c, N = self.c, self.c["particles"]
+        self.timing = {"geo_ms": 0.0, "image_ms": 0.0, "filter_total_ms": 0.0}
         x = self.sample_prior(lps[0], N)
         logw = np.zeros(N)
         # Optional augmented state: each particle carries its own guess of the dead-reckoning
@@ -108,6 +120,7 @@ class Filter:
         bias = self.rng.normal(0, 1, (N, 2)) * sd_b if est_bias else np.zeros((N, 2))
         rows = []
         for t, i in enumerate(idx):
+            t_step = time.perf_counter()
             if t > 0:
                 j = idx[t - 1]
                 u = np.array([w["e"][i] - w["e"][j], w["n"][i] - w["n"][j]])
@@ -121,7 +134,7 @@ class Filter:
                 else:
                     uc = u
                 x = x + uc + self.rng.normal(0, c["motion_sigma"] + c["drift"] * dist, (N, 2))
-                k = int(c["reinject"] * N)
+                k = int(c["reinject"] * N) if np.isfinite(lps[t][0]) else 0   # only when the model ran
                 if k:
                     sl = self.rng.choice(N, k, replace=False)
                     x[sl] = self.sample_prior(lps[t], k)
@@ -129,17 +142,21 @@ class Filter:
                         bias[sl] = self.rng.normal(0, 1, (k, 2)) * sd_b
                     logw[sl] = np.log(np.mean(np.exp(logw - logw.max()))) + logw.max()
             g = self.gains(udml_w[t])
+            t0 = time.perf_counter()
             ll, ok = self.geo_loglik(x, w, i)
+            self.timing["geo_ms"] += 1000 * (time.perf_counter() - t0)
             for k_, v in ll.items():
                 if self.use[MOD_OF[k_]]:
                     logw += g[MOD_OF[k_]] * v
             logw = np.where(ok, logw, logw - 10)                 # particle itself is off the map
             # Robust coarse prior: log(1 + C p) rewards cells the model likes but never punishes a
             # cell below a uniform guess, so a confidently wrong prior can't drag the cloud away.
-            lp_cell = lps[t][self.tercom.cell_of(x[:, 0], x[:, 1])] + np.log(len(lps[t]))
-            logw += c["prior_weight"] * np.logaddexp(0.0, lp_cell)
+            if np.isfinite(lps[t][0]):
+                lp_cell = lps[t][self.tercom.cell_of(x[:, 0], x[:, 1])] + np.log(len(lps[t]))
+                logw += c["prior_weight"] * np.logaddexp(0.0, lp_cell)
 
             matched = None
+            t0 = time.perf_counter()
             if self.use["vision"] and q_imgs[t] is not None and t % c["image_every"] == 0:
                 spread = np.sqrt(np.average(((x - x.mean(0)) ** 2).sum(1), weights=np.exp(logw - logw.max())))
                 rad = float(np.clip(2.5 * spread, c["image_radius_min"], self.dsmac.c["radius"]))
@@ -161,6 +178,7 @@ class Filter:
                     bias[sl] = bias[self.rng.choice(order[-k:], k)]    # with the best particles' bias
                     logw[sl] = logw.max()
 
+            self.timing["image_ms"] += 1000 * (time.perf_counter() - t0)
             logw -= logw.max()
             wt = np.exp(logw)
             ess = wt.sum() ** 2 / (wt ** 2).sum()
@@ -171,12 +189,56 @@ class Filter:
                 x = x[ri] + self.rng.normal(0, 2.0, (N, 2))
                 bias = bias[ri]
                 logw = np.zeros(N)
+            self.timing["filter_total_ms"] += 1000 * (time.perf_counter() - t_step)
             rows.append(dict(e=float(w["e"][i]), n=float(w["n"][i]), pe=est[0], pn=est[1], ess=ess,
                              mode_frac=mode_frac, image_fix=matched is not None,
                              bias_deg=b_est,
                              true_bias_deg=float(np.degrees(np.arctan2(dr_bias[0, 1], dr_bias[0, 0]))),
                              w_vision=udml_w[t][0], w_mag=udml_w[t][1], w_grav=udml_w[t][2]))
         return pd.DataFrame(rows)
+
+
+class EdgeNets:
+    """The networks as they would run onboard: ONNX Runtime, one frame at a time, only every
+    `model_every` steps (classifier for the cell prior and UDML weights, retrieval embedder)."""
+
+    def __init__(self, a, data, cfg):
+        import onnxruntime as ort
+        from .edge.export import ONNX
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = torch.get_num_threads()
+        v = "_int8" if a.int8 else ""
+        self.cls = ort.InferenceSession(str(ONNX / f"classifier{v}.onnx"), so, providers=["CPUExecutionProvider"])
+        self.ret = None
+        if a.retrieval:
+            self.ret = ort.InferenceSession(str(ONNX / f"retrieval{v}.onnx"), so, providers=["CPUExecutionProvider"])
+            ck = torch.load(a.retrieval, map_location="cpu", weights_only=False)
+            self.db_pos, self.db_emb = ck["db_pos"], ck["db_emb"].astype(np.float32)
+        self.data, self.cfg = data, cfg
+        self.timing = {"networks_ms": 0.0}
+
+    def priors(self, ds, idx, prior, every):
+        from .retrieval import cell_log_prior
+        C = len(cell_centers(self.data.ext, self.cfg["coarse"]["cell"])[0])
+        lps = np.full((len(idx), C), np.nan)
+        ws = np.zeros((len(idx), 3), np.float32)
+        for t, i in enumerate(idx):
+            if t % every:
+                ws[t] = ws[t - 1]
+                continue
+            s = ds[i]
+            feed = {"img": s["img"][None].numpy(), "mag": s["mag"][None].numpy(), "grav": s["grav"][None].numpy()}
+            t0 = time.perf_counter()
+            logits, w = self.cls.run(None, feed)
+            lp = (logits[0] - np.logaddexp.reduce(logits[0])) if prior != "none" else np.full(C, -np.log(C))
+            if self.ret is not None:
+                emb = self.ret.run(None, {"img": feed["img"]})[0]
+                lp = lp + cell_log_prior(emb @ self.db_emb.T, self.db_pos, self.data.ext,
+                                         self.cfg["coarse"]["cell"], self.cfg["retrieval"]["tau"])[0]
+                lp -= np.logaddexp.reduce(lp)
+            self.timing["networks_ms"] += 1000 * (time.perf_counter() - t0)
+            lps[t], ws[t] = lp, w[0]
+        return lps, ws
 
 
 def systematic(p, rng):
@@ -219,6 +281,9 @@ def main():
     ap.add_argument("--tag", default=None)
     ap.add_argument("--outdir", default="phase2", help="folder under runs/ for the outputs")
     ap.add_argument("--set", nargs="*", default=[])
+    ap.add_argument("--backend", default="torch", choices=["torch", "onnx"],
+                    help="onnx: run the networks one frame at a time with ONNX Runtime on CPU (edge timing)")
+    ap.add_argument("--int8", action="store_true", help="with --backend onnx: INT8-quantised networks")
     a = ap.parse_args()
 
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
@@ -229,7 +294,7 @@ def main():
     cfg["img"]["color_align"] = base["img"].get("color_align", "none")   # evaluation-time option
     cfg["model"]["pretrained"] = False
     cfg["train"]["workers"] = base["train"]["workers"]
-    dev = torch.device("cuda")
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data = MapData(cfg, available_years(cfg))
     model = Localizer(cfg, data.ext).to(dev).eval()
     model.load_state_dict(ck["model"])
@@ -246,8 +311,9 @@ def main():
 
     tercom = ProfileMatcher(data, cfg)
     tercom.calibrate(HeldOutSet(data, "val", year).w)
-    dsmac = ImageMatcher(data, cfg, year)
-    retriever = Retriever(a.retrieval, data, cfg) if a.retrieval else None
+    dsmac = ImageMatcher(data, cfg, year, dev=str(dev))
+    edge = EdgeNets(a, data, cfg) if a.backend == "onnx" else None
+    retriever = Retriever(a.retrieval, data, cfg, dev=str(dev)) if a.retrieval and edge is None else None
     centers, _ = cell_centers(data.ext, cfg["coarse"]["cell"])
     use = {"vision": not a.no_image, "mag": not a.no_mag, "grav": not a.no_grav}
     tag = a.tag or "_".join([a.prior + ("+retrieval" if retriever else ""), a.weights]
@@ -259,13 +325,15 @@ def main():
           f"tag {tag}")
 
     flights = list(dict.fromkeys(w["seg"].tolist()))[: a.flights]
-    all_rows = []
+    all_rows, timing = [], {}
     for fi, seg in enumerate(flights):
         idx = np.flatnonzero(w["seg"] == seg)
         lps, udml_w = [], []
+        if edge is not None:
+            lps, udml_w = edge.priors(ds_model, idx, a.prior, cfg["track"].get("model_every", 1))
         with torch.no_grad():
-            for batch in DataLoader(Subset(ds_model, idx), 64, num_workers=4):
-                with torch.autocast("cuda", dtype=torch.bfloat16):
+            for batch in (DataLoader(Subset(ds_model, idx), 64, num_workers=4) if edge is None else []):
+                with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
                     out = model(to_dev(batch, dev))
                 lp = (log_prior(out, centers, data.ext, a.prior, cfg["coarse"]["cell"]) if a.prior != "none"
                       else np.full((len(batch["avail"]), len(centers)), -np.log(len(centers))))
@@ -274,7 +342,15 @@ def main():
                     lp -= np.logaddexp.reduce(lp, axis=1, keepdims=True)
                 lps.append(lp)
                 udml_w.append(out["w"].float().cpu().numpy())
-        lps, udml_w = np.concatenate(lps), np.concatenate(udml_w)
+        if edge is None:
+            lps, udml_w = np.concatenate(lps), np.concatenate(udml_w)
+        # Edge mode: the networks only run every `model_every` steps; in between there is no coarse
+        # prior and the last UDML weights are reused.
+        k = cfg["track"].get("model_every", 1)
+        if k > 1:
+            off = np.arange(len(lps)) % k != 0
+            lps[off] = np.nan
+            udml_w = udml_w[(np.arange(len(udml_w)) // k) * k]
         q_imgs = [dsmac.query_image(float(w["e"][i]), float(w["n"][i]), rng) for i in idx]
         b = cfg["track"]
         ang = np.radians(rng.normal(0, b["dr_heading_bias_deg"]))
@@ -284,6 +360,9 @@ def main():
         df = f.run(w, idx, lps, udml_w, q_imgs, dr_bias)
         df["flight"], df["step"], df["line"] = int(seg), np.arange(len(df)), w["line"][idx]
         df["error_m"] = np.hypot(df.pe - df.e, df.pn - df.n)
+        for k_, v_ in f.timing.items():
+            timing[k_] = timing.get(k_, 0.0) + v_
+        timing["steps"] = timing.get("steps", 0) + len(idx)
         all_rows.append(df)
         print(f"  flight {fi + 1}/{len(flights)} (line {int(w['line'][idx[0]])}, {len(idx)} steps): "
               f"median {df.error_m.median():.1f} m, after 10 steps {df.error_m[10:].median():.1f} m, "
@@ -292,7 +371,15 @@ def main():
             plot(df, data, cfg, year, out_dir / f"track_{tag}_flight{seg}.png")
 
     df = pd.concat(all_rows)
-    rep = dict(tag=tag, split=a.split, imagery_year=year, ckpt=a.ckpt, retrieval=a.retrieval, **summarise(df))
+    if edge is not None:
+        timing.update(edge.timing)
+    n = max(timing.get("steps", 1), 1)
+    per_step = {k_.replace("_ms", "_ms_per_step"): v_ / n for k_, v_ in timing.items() if k_.endswith("_ms")}
+    total = per_step.get("filter_total_ms_per_step", 0) + per_step.get("networks_ms_per_step", 0)
+    per_step.update(total_ms_per_step=total, hz=1000 / total if total else None, backend=a.backend,
+                    int8=a.int8, threads=torch.get_num_threads())
+    rep = dict(tag=tag, split=a.split, imagery_year=year, ckpt=a.ckpt, retrieval=a.retrieval,
+               timing=per_step, **summarise(df))
     df.to_csv(out_dir / f"track_{tag}.csv", index=False)
     with open(out_dir / f"track_{tag}.json", "w") as fh:
         json.dump(rep, fh, indent=1)
@@ -300,6 +387,10 @@ def main():
     print(f"{tag}: median {s['median']:.1f} m, <10m {s['within_10m']:.0%}, <25m {s['within_25m']:.0%}, "
           f"p90 {s['p90']:.0f} m | after 10 steps: median {cv['median']:.1f} m, <10m {cv['within_10m']:.0%}, "
           f"p90 {cv['p90']:.0f} m | diverged flights {rep['flights_with_divergence']}/{rep['flights']}")
+    tm = rep["timing"]
+    print("timing per step: " + ", ".join(f"{k_.replace('_ms_per_step', '')} {v_:.1f} ms"
+                                          for k_, v_ in tm.items() if k_.endswith("_ms_per_step"))
+          + (f" -> {tm['hz']:.1f} Hz" if tm.get("hz") else ""))
 
 
 def plot(df, data, cfg, year, fn):

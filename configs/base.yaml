@@ -78,6 +78,8 @@ track:                     # particle filter over held-out flights (btp/track.py
   gain_min: 0.25           # UDML gain K*w_k clipped to [gain_min, gain_max]
   gain_max: 2.0
   estimate_bias: false     # particles also estimate the dead-reckoning heading/scale bias
+  kernel: numpy            # numpy | numba (fused CPU kernel, btp/edge/kernels.py; same result, ~50x faster)
+  model_every: 1           # run the slide-6 model / retrieval only every k steps (edge: rarely)
 
 retrieval:
   stride: 100.0            # m between reference-map tiles in the database

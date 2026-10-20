@@ -101,17 +101,21 @@ def recall(q_emb, q_pos, db_emb, db_pos, radius, ks=(1, 5, 10, 25)):
 
 
 def cell_log_prior(sims, db_pos, ext, cell, tau):
-    """Turn tile similarities (B, T) into log-probabilities over coarse cells (B, C)."""
+    """Turn tile similarities (B, T) into log-probabilities over coarse cells (B, C):
+    log-sum-exp of the tiles in each cell, normalised (vectorised with bincount)."""
     from .geo import cell_centers
     _, (rows, cols) = cell_centers(ext, cell)
+    C = rows * cols
     r = np.clip(((ext.y1 - db_pos[:, 1]) // cell).astype(int), 0, rows - 1)
     c = np.clip(((db_pos[:, 0] - ext.x0) // cell).astype(int), 0, cols - 1)
     cid = r * cols + c
-    lp = np.full((len(sims), rows * cols), -1e9, np.float64)
-    z = sims / tau
-    for j in np.unique(cid):                       # log-sum-exp of the tiles in each cell
-        m = cid == j
-        lp[:, j] = np.logaddexp.reduce(z[:, m], axis=1)
+    z = np.asarray(sims, np.float64) / tau
+    zmax = z.max(1, keepdims=True)
+    e = np.exp(z - zmax)
+    lp = np.full((len(z), C), -1e9)
+    has = np.bincount(cid, minlength=C) > 0
+    for b in range(len(z)):
+        lp[b, has] = np.log(np.bincount(cid, weights=e[b], minlength=C)[has]) + zmax[b, 0]
     return lp - np.logaddexp.reduce(lp, axis=1, keepdims=True)
 
 
