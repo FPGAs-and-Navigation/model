@@ -8,7 +8,26 @@
 \toprule
 Configuration & Median & $<$10\,m & $<$25\,m & p90 & $<$10\,m after 10 steps & Lost flights \\
 \midrule
-\multicolumn{7}{c}{\textit{pending}} \\
+\textbf{Full: classifier$\times$retrieval + TERCOM + LoFTR, UDML} & 1.4\,m & 98\% & 98\% & 3.3\,m & 98\% & 1/20 \\
+\quad easy views & 1.2\,m & 98\% & 99\% & 2.8\,m & 99\% & 2/20 \\
+\quad no retrieval & 1.5\,m & 96\% & 97\% & 3.5\,m & 97\% & 5/20 \\
+\quad NCC instead of LoFTR & 6.7\,m & 63\% & 81\% & 55.9\,m & 63\% & 6/20 \\
+\quad no image matching & 32.5\,m & 8\% & 36\% & 76.7\,m & 8\% & 6/20 \\
+\quad no magnetometer & 1.5\,m & 98\% & 99\% & 3.6\,m & 99\% & 1/20 \\
+\quad no gravity & 1.4\,m & 95\% & 96\% & 3.9\,m & 96\% & 5/20 \\
+\quad equal weights instead of UDML & 1.6\,m & 92\% & 95\% & 5.6\,m & 93\% & 3/20 \\
+\quad noisy mag, UDML & 1.6\,m & 89\% & 90\% & 44.7\,m & 89\% & 9/20 \\
+\quad noisy mag, equal & 1.8\,m & 82\% & 82\% & 4{,}813\,m & 82\% & 9/20 \\
+\quad regressor prior instead of classifier & 1.5\,m & 97\% & 98\% & 3.6\,m & 98\% & 1/20 \\
++ DR bias estimation & 1.4\,m & 98\% & 98\% & 3.2\,m & 98\% & 2/20 \\
+Fix every 4th frame, 3$^\circ$ DR bias & 4.1\,m & 82\% & 92\% & 18.0\,m & 83\% & 2/20 \\
+\quad + DR bias estimation & 2.0\,m & 89\% & 92\% & 11.9\,m & 89\% & 3/20 \\
+Balanced classifier + bias est. & 1.4\,m & 98\% & 98\% & 3.4\,m & 98\% & 3/20 \\
+\quad equal weights & 1.5\,m & 93\% & 94\% & 5.1\,m & 93\% & 6/20 \\
+\quad noisy mag, UDML & 1.8\,m & 73\% & 74\% & 12{,}747\,m & 73\% & 13/20 \\
+\quad noisy mag, equal & 2.1\,m & 69\% & 71\% & 14{,}255\,m & 68\% & 12/20 \\
+\textbf{Best: balanced + bias est.\ + colour alignment} & 1.4\,m & 98\% & 99\% & 3.3\,m & 99\% & 1/20 \\
+No slide-6 model: retrieval prior, equal weights & 1.5\,m & 90\% & 92\% & 11.6\,m & 91\% & 10/20 \\
 \bottomrule
 \end{tabular}
 \end{adjustbox}

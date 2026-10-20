@@ -48,8 +48,9 @@ def phase3(cfg):
     runs = config.path(cfg, "run_dir")
     out = runs / "phase3"
     out.mkdir(parents=True, exist_ok=True)
-    lines, data = ["# Phase 3 results: literature-driven fixes", "",
-                   "Test flight lines, 2022 imagery, realistic camera views, unless noted.", ""]
+    lines = ["# Phase 3 results: literature-driven fixes", "",
+             "Test flight lines, 2022 imagery, realistic camera views, unless noted.", ""]
+    data = {}
 
     lines += ["## 1. Does balanced training (OGM + vision dropout) fix UDML?", "",
               "| model | fused median | vision / mag / grav alone | weights clean | weights, noisy vision | "

@@ -8,7 +8,12 @@
 \toprule
 Embedder & Queries & R@1 & R@5 & R@10 & R@25 \\
 \midrule
-\multicolumn{6}{c}{\textit{pending}} \\
+Zero-shot DINOv2 ViT-S/14 & val 2018 & 28\% & 44\% & 53\% & 64\% \\
+Zero-shot DINOv2 ViT-S/14 & test 2022 & 27\% & 45\% & 55\% & 67\% \\
+Zero-shot DINOv2 ViT-B/14 & val 2018 & 23\% & 38\% & 46\% & 57\% \\
+Zero-shot DINOv2 ViT-B/14 & test 2022 & 22\% & 40\% & 48\% & 61\% \\
+Fine-tuned slide-6 ViT (InfoNCE) & val 2018 & 100\% & 100\% & 100\% & 100\% \\
+Fine-tuned slide-6 ViT (InfoNCE) & test 2022 & 79\% & 88\% & 91\% & 94\% \\
 \bottomrule
 \end{tabular}
 \end{adjustbox}

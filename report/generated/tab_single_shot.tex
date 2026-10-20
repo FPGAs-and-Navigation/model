@@ -8,7 +8,16 @@
 \toprule
 Configuration & Right cell in top-$k$ & Fix rate & Wrong fixes & Median of fixes & Fixes $<$10\,m \\
 \midrule
-\multicolumn{6}{c}{\textit{pending}} \\
+Classifier, NCC & 89\% & 21\% & 1.01\% & 4.7\,m & 84\% \\
+Classifier, LoFTR & 89\% & 87\% & 0.00\% & 1.6\,m & 100\% \\
+Classifier $\times$ retrieval, LoFTR & 93\% & 88\% & 0.00\% & 1.6\,m & 100\% \\
+\quad same, easy views & 93\% & 90\% & 0.00\% & 1.0\,m & 100\% \\
+\quad + sequence prior (5 frames) & 93\% & 88\% & 0.00\% & 1.6\,m & 100\% \\
+\quad + colour alignment & 92\% & 89\% & 0.00\% & 1.6\,m & 100\% \\
+\quad + top-30 cells & 97\% & 90\% & 0.00\% & 1.6\,m & 100\% \\
+\quad + all three & 94\% & 88\% & 0.00\% & 1.6\,m & 100\% \\
+Balanced classifier + all three & 93\% & 88\% & 0.00\% & 1.6\,m & 100\% \\
+No slide-6 model: retrieval only & 89\% & 87\% & 0.00\% & 1.6\,m & 100\% \\
 \bottomrule
 \end{tabular}
 \end{adjustbox}
