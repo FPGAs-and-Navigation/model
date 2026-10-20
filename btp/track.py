@@ -161,7 +161,8 @@ class Filter:
                 spread = np.sqrt(np.average(((x - x.mean(0)) ** 2).sum(1), weights=np.exp(logw - logw.max())))
                 rad = float(np.clip(2.5 * spread, c["image_radius_min"], self.dsmac.c["radius"]))
                 best = (0, 0, -1.0)
-                for h in self.clusters(x, logw):
+                # A converged cloud needs one hypothesis; a spread-out one gets up to three.
+                for h in self.clusters(x, logw, n=1 if spread < c.get("converged_spread", 50.0) else 3):
                     m = self.dsmac.match(q_imgs[t], *h, radius=rad)
                     if m[2] > best[2]:
                         best = m
@@ -207,6 +208,9 @@ class EdgeNets:
         from .edge.export import ONNX
         so = ort.SessionOptions()
         so.intra_op_num_threads = torch.get_num_threads()
+        # PyTorch (matcher), Numba (kernel) and ONNX Runtime share the same few cores; busy-waiting
+        # threads from one runtime would steal them from the next, so ORT threads sleep when idle.
+        so.add_session_config_entry("session.intra_op.allow_spinning", "0")
         v = "_int8" if a.int8 else ""
         self.cls = ort.InferenceSession(str(ONNX / f"classifier{v}.onnx"), so, providers=["CPUExecutionProvider"])
         self.ret = None
@@ -216,6 +220,14 @@ class EdgeNets:
             self.db_pos, self.db_emb = ck["db_pos"], ck["db_emb"].astype(np.float32)
         self.data, self.cfg = data, cfg
         self.timing = {"networks_ms": 0.0}
+        # Warm up (first ONNX Runtime calls allocate and autotune; not representative).
+        L = cfg["seq"]["len"]
+        dummy = {"img": np.zeros((1, 3, 224, 224), np.float32), "mag": np.zeros((1, 4, L), np.float32),
+                 "grav": np.zeros((1, 5, L), np.float32)}
+        for _ in range(3):
+            self.cls.run(None, dummy)
+            if self.ret is not None:
+                self.ret.run(None, {"img": dummy["img"]})
 
     def priors(self, ds, idx, prior, every):
         from .retrieval import cell_log_prior

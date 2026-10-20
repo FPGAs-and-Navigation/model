@@ -54,6 +54,20 @@ The slide-6 model stays at the core, and three published ideas are wrapped aroun
 - **Instance colour alignment to the onboard map:** `img.color_align: instance`.
 - **Particles estimate the dead-reckoning heading/scale bias:** `track.estimate_bias`, the augmented-state idea from marginalised-PF magnetic navigation.
 
+## Phase 4: running on cheap hardware (`btp/edge/`, `scripts/edge_sweep.sh`)
+- **Target:** a Raspberry Pi-class CPU, emulated on 4 E-cores of an i7-12700H.
+- **Design:** position outputs come from a fast loop (dead reckoning plus the magnetometer/gravity particle update, with INT8 ONNX networks every 10th step). That loop runs at about 45–49 Hz on 4 E-cores. Image matching runs in the background, and accuracy depends on how many metres pass between fixes.
+- **Optimisations:**
+  - fused Numba likelihood kernel (50× faster, identical numbers),
+  - ONNX Runtime with INT8 for the ViTs (1.8× faster, 4× smaller, same top-10 cells),
+  - non-spinning thread pools so PyTorch, Numba and ONNX Runtime can share 4 cores,
+  - 1,000 particles,
+  - networks only every 10th step.
+- **Findings:** see `report/edge_tolerance.md` for the accuracy/latency table.
+  - Full-resolution LoFTR (1.2 s per match on the E-cores) still gives 1.4 m and 99% within 10 m, because one fix per 50 m of flight is enough.
+  - Slower hardware or faster flight degrades gracefully: with a fix every 400 m, it's 2.8 m and 86%.
+  - Our 111k-parameter learned DSMAC is 20× faster but less accurate across imagery years (3.7 m, 76%).
+
 ## Data
 - **Imagery:** NAIP 0.6 m imagery for 2016, 2018, 2020 and 2022. It is resampled to 1.25 m/px; one crop is 224 px, about 280 m across.
 - **Geophysics:** the USGS 2016 HeliFALCON survey (DOI 10.5066/P9SQV3SB):

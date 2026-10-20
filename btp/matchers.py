@@ -140,12 +140,18 @@ class XFeat:
 
 
 def build(method, dev="cuda"):
-    def ldsmac():
+    def ldsmac(refine_px=0, edge=False, grid=0, ckpt="runs/edge/ldsmac.pt"):
         from .edge.ldsmac import Matcher
-        return Matcher(config.ROOT / "runs/edge/ldsmac.pt", dev)
+        if edge:   # precomputed int8 map features + ONNX Runtime query network (CPU deployment)
+            return Matcher(config.ROOT / ckpt, "cpu", refine_px, grid=grid,
+                           ref_feats=config.ROOT / "runs/edge/ldsmac_feats_2020.npy",
+                           onnx=config.ROOT / "data/edge/onnx/ldsmac_feat.onnx")
+        return Matcher(config.ROOT / ckpt, dev, refine_px, grid=grid)
     return {"ncc": NCC, "loftr": lambda: LoFTR(dev), "lightglue": lambda: LightGlue(dev),
             "xfeat": lambda: XFeat(dev), "xfeat_star": lambda: XFeat(dev, star=True),
-            "ldsmac": ldsmac}[method]()
+            "ldsmac": ldsmac, "ldsmac_refine": lambda: ldsmac(8),
+            "ldsmac_p4": lambda: ldsmac(grid=4), "ldsmac_p7": lambda: ldsmac(grid=7),
+            "ldsmac_p7_edge": lambda: ldsmac(edge=True, grid=7)}[method]()
 
 
 def call(fn, q, ref):

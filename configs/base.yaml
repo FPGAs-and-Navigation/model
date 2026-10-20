@@ -56,10 +56,11 @@ dsmac:
   rot_sigma: 8.0           # deg, heading error of the query image
   scale_sigma: 0.07        # altitude error of the query image
   tilt_deg: 10.0           # camera pitch/roll (perspective); the 'easy' runs set 0
+  scale: 1.0               # <1: match on downsampled images (edge: cheaper, less precise)
   method: loftr            # ncc | loftr | lightglue  (see python -m btp.matchers)
   # Below this confidence the profile-matching estimate is kept
   # (ncc: peak-to-sidelobe ratio; loftr/lightglue: RANSAC inliers). Set from the val benchmark.
-  min_score: {ncc: 6.0, loftr: 15, lightglue: 8}
+  min_score: {ncc: 6.0, loftr: 15, lightglue: 8, xfeat: 10, xfeat_star: 8, ldsmac: 3.0, ldsmac_refine: 3.0, ldsmac_edge: 3.0}
 
 track:                     # particle filter over held-out flights (btp/track.py)
   particles: 3000

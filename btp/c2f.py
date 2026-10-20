@@ -217,7 +217,18 @@ class ImageMatcher:
         ref = self.window(self.ref, r0, c0, side)
         if ref is None:
             return e, n, -1.0
-        x, y, conf = matchers.call(self.fn, q, ref)
+        sc = self.c.get("scale", 1.0)
+        if sc != 1.0:     # cheaper matching on downsampled images
+            import cv2
+            qs = cv2.resize(q, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
+            rs = cv2.resize(ref, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
+            x, y, conf = matchers.call(self.fn, qs, rs)
+            x, y = x / sc, y / sc
+        elif hasattr(self.fn, "match_window") and self.fn.ref_feats is not None:
+            x, y, conf = self.fn.match_window(np.clip(q, 0, 255).astype(np.uint8), r0, c0, side,
+                                              np.clip(ref, 0, 255).astype(np.uint8))
+        else:
+            x, y, conf = matchers.call(self.fn, q, ref)
         ext = self.d.ext
         return ext.x0 + (c0 + x) * self.res, ext.y1 - (r0 + y) * self.res, float(conf)
 
