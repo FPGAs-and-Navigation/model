@@ -60,7 +60,7 @@ dsmac:
   method: loftr            # ncc | loftr | lightglue  (see python -m btp.matchers)
   # Below this confidence the profile-matching estimate is kept
   # (ncc: peak-to-sidelobe ratio; loftr/lightglue: RANSAC inliers). Set from the val benchmark.
-  min_score: {ncc: 6.0, loftr: 15, lightglue: 8, xfeat: 10, xfeat_star: 8, ldsmac: 3.0, ldsmac_refine: 3.0, ldsmac_edge: 3.0}
+  min_score: {ncc: 6.0, loftr: 15, loftr_fp16: 15, loftr_trt: 15, lightglue: 8, xfeat: 10, xfeat_star: 8, ldsmac: 3.0, ldsmac_refine: 3.0, ldsmac_edge: 3.0}
 
 track:                     # particle filter over held-out flights (btp/track.py)
   particles: 3000

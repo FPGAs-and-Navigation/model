@@ -77,14 +77,15 @@ def to_tensor(img, dev):
 
 
 class LoFTR:
-    def __init__(self, dev="cuda"):
+    def __init__(self, dev="cuda", fp16=False):
         import kornia.feature as KF
-        self.dev = dev
+        self.dev, self.fp16 = dev, fp16 and str(dev).startswith("cuda")
         self.net = KF.LoFTR(pretrained="outdoor").to(dev).eval()
 
     @torch.no_grad()
     def __call__(self, q, ref):
-        out = self.net({"image0": to_tensor(q, self.dev), "image1": to_tensor(ref, self.dev)})
+        with torch.autocast("cuda", dtype=torch.float16, enabled=self.fp16):
+            out = self.net({"image0": to_tensor(q, self.dev), "image1": to_tensor(ref, self.dev)})
         keep = out["confidence"] > 0.3
         kq = out["keypoints0"][keep].cpu().numpy()
         kr = out["keypoints1"][keep].cpu().numpy()
@@ -147,7 +148,14 @@ def build(method, dev="cuda"):
                            ref_feats=config.ROOT / "runs/edge/ldsmac_feats_2020.npy",
                            onnx=config.ROOT / "data/edge/onnx/ldsmac_feat.onnx")
         return Matcher(config.ROOT / ckpt, dev, refine_px, grid=grid)
-    return {"ncc": NCC, "loftr": lambda: LoFTR(dev), "lightglue": lambda: LightGlue(dev),
+    def loftr_trt():
+        from .edge.loftr_trt import patch
+        m = LoFTR(dev, fp16=True)
+        patch(m.net)
+        return m
+    return {"ncc": NCC, "loftr": lambda: LoFTR(dev), "loftr_fp16": lambda: LoFTR(dev, fp16=True),
+            "loftr_trt": loftr_trt,
+            "lightglue": lambda: LightGlue(dev),
             "xfeat": lambda: XFeat(dev), "xfeat_star": lambda: XFeat(dev, star=True),
             "ldsmac": ldsmac, "ldsmac_refine": lambda: ldsmac(8),
             "ldsmac_p4": lambda: ldsmac(grid=4), "ldsmac_p7": lambda: ldsmac(grid=7),

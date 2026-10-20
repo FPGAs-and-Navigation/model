@@ -68,6 +68,13 @@ The slide-6 model stays at the core, and three published ideas are wrapped aroun
   - Slower hardware or faster flight degrades gracefully: with a fix every 400 m, it's 2.8 m and 86%.
   - Our 111k-parameter learned DSMAC is 20× faster but less accurate across imagery years (3.7 m, 76%).
 
+## Phase 5: GPU / Jetson path (`btp/edge/triton_kernels.py`, `btp/edge/trt.py`, `btp/edge/loftr_trt.py`)
+- **Particle update:** a fused Triton kernel (4–11× faster than PyTorch on the GPU, same numbers).
+- **Networks:** TensorRT FP16 engines (1.2–1.6 ms; built from FP16 ONNX exported from half-precision models, since TensorRT 11 is strongly typed).
+- **LoFTR:** its backbone runs as a TensorRT engine, and the rest of LoFTR in FP16.
+- **Result:** on a laptop RTX 3060, the full pipeline (everything every step) runs at 38.7 Hz with the desktop system's accuracy (1.4 m, 98% within 10 m). See `report/gpu_results.md`.
+- **Running it:** `.venv-gpu/bin/python -m btp.track data/edge/coarse.pt --retrieval data/edge/retrieval.pt --backend trt --set dsmac.method=loftr_trt track.kernel=triton track.particles=1000 track.estimate_bias=true`
+
 ## Data
 - **Imagery:** NAIP 0.6 m imagery for 2016, 2018, 2020 and 2022. It is resampled to 1.25 m/px; one crop is 224 px, about 280 m across.
 - **Geophysics:** the USGS 2016 HeliFALCON survey (DOI 10.5066/P9SQV3SB):

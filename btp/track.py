@@ -59,6 +59,18 @@ class Filter:
         the particle itself is on the map.
         """
         te, tn = w["track_e"][i], w["track_n"][i]
+        if self.c.get("kernel", "numpy") == "triton":           # fused GPU kernel (Jetson path)
+            from .edge.triton_kernels import geo_cost as triton_geo
+            if not hasattr(self, "_gmaps"):
+                self._gmaps = torch.from_numpy(np.stack([self.tercom.maps[k] for k in CHANNELS]).astype(np.float32)).cuda()
+                self._gmask = torch.from_numpy(self.tercom.mask.astype(np.uint8)).cuda()
+                self._ginv = torch.tensor([1 / self.tercom.sigma[k] ** 2 for k in CHANNELS], device="cuda")
+            y = torch.from_numpy(np.stack([w[k][i] for k in CHANNELS]).astype(np.float32)).cuda()
+            cost, on_map = triton_geo(torch.from_numpy(x).cuda(), torch.from_numpy(te.astype(np.float32)).cuda(),
+                                      torch.from_numpy(tn.astype(np.float32)).cuda(), y, self._gmaps, self._gmask,
+                                      self._ginv, self.tercom.d.ext, self.tercom.res)
+            cost, on_map = cost.cpu().numpy(), on_map.cpu().numpy()
+            return {k: -0.5 * cost[:, j] / self.c["geo_temper"] for j, k in enumerate(CHANNELS)}, on_map
         if self.c.get("kernel", "numpy") == "numba":            # fused kernel, same result
             from .edge.kernels import geo_cost
             if not hasattr(self, "_maps"):
@@ -116,6 +128,7 @@ class Filter:
         # heading/scale bias (as in marginalised-PF magnetic navigation), so the filter learns the
         # bias from the fixes and drifts less between them.
         est_bias = c.get("estimate_bias", False)
+        prev_est = None
         sd_b = np.array([np.radians(c["dr_heading_bias_deg"]), c["dr_scale_bias"]])
         bias = self.rng.normal(0, 1, (N, 2)) * sd_b if est_bias else np.zeros((N, 2))
         rows = []
@@ -158,7 +171,15 @@ class Filter:
             matched = None
             t0 = time.perf_counter()
             if self.use["vision"] and q_imgs[t] is not None and t % c["image_every"] == 0:
-                spread = np.sqrt(np.average(((x - x.mean(0)) ** 2).sum(1), weights=np.exp(logw - logw.max())))
+                # Spread of the main cluster only: the few particles re-drawn across the map each step
+                # would otherwise inflate it to kilometres and force the widest (slowest) search.
+                wt_ = np.exp(logw - logw.max())
+                ctr = x[np.argmax(logw)] if prev_est is None else prev_est
+                near = np.hypot(*(x - ctr).T) < c.get("cluster_radius", 300.0)
+                if wt_[near].sum() < 0.5 * wt_.sum():       # not converged: use the whole cloud
+                    near = np.ones(len(x), bool)
+                xm = np.average(x[near], axis=0, weights=wt_[near])
+                spread = np.sqrt(np.average(((x[near] - xm) ** 2).sum(1), weights=wt_[near]))
                 rad = float(np.clip(2.5 * spread, c["image_radius_min"], self.dsmac.c["radius"]))
                 best = (0, 0, -1.0)
                 # A converged cloud needs one hypothesis; a spread-out one gets up to three.
@@ -184,6 +205,7 @@ class Filter:
             wt = np.exp(logw)
             ess = wt.sum() ** 2 / (wt ** 2).sum()
             est, mode_frac = self.estimate(x, logw)
+            prev_est = est
             b_est = float(np.degrees(np.average(bias[:, 0], weights=wt)))
             if ess < N / 2:
                 ri = systematic(wt / wt.sum(), self.rng)
@@ -204,6 +226,26 @@ class EdgeNets:
     `model_every` steps (classifier for the cell prior and UDML weights, retrieval embedder)."""
 
     def __init__(self, a, data, cfg):
+        self.trt = a.backend == "trt"
+        if self.trt:     # TensorRT FP16 engines on the GPU (btp/edge/trt.py)
+            from .edge.trt import TRT_DIR, Engine
+            self.cls = Engine(TRT_DIR / "classifier_fp16.engine")
+            self.ret = Engine(TRT_DIR / "retrieval_fp16.engine") if a.retrieval else None
+            if a.retrieval:
+                ck = torch.load(a.retrieval, map_location="cpu", weights_only=False)
+                self.db_pos = ck["db_pos"]
+                self.db_emb = torch.from_numpy(ck["db_emb"].astype(np.float32)).cuda()
+            self.data, self.cfg = data, cfg
+            self.timing = {"networks_ms": 0.0}
+            L = cfg["seq"]["len"]
+            z = {"img": torch.zeros(1, 3, 224, 224, device="cuda"), "mag": torch.zeros(1, 4, L, device="cuda"),
+                 "grav": torch.zeros(1, 5, L, device="cuda")}
+            for _ in range(5):                          # warm-up (first launches allocate/tune)
+                self.cls(**dict(z))
+                if self.ret is not None:
+                    self.ret(img=z["img"])
+            torch.cuda.synchronize()
+            return
         import onnxruntime as ort
         from .edge.export import ONNX
         so = ort.SessionOptions()
@@ -240,6 +282,21 @@ class EdgeNets:
                 continue
             s = ds[i]
             feed = {"img": s["img"][None].numpy(), "mag": s["mag"][None].numpy(), "grav": s["grav"][None].numpy()}
+            if self.trt:
+                t0 = time.perf_counter()
+                gf = {k: torch.from_numpy(v).cuda() for k, v in feed.items()}
+                o = self.cls(**gf)
+                logits, w = o["logits"].float().cpu().numpy(), o["w"].float().cpu().numpy()
+                lp = (logits[0] - np.logaddexp.reduce(logits[0])) if prior != "none" else np.full(C, -np.log(C))
+                if self.ret is not None:
+                    emb = self.ret(img=gf["img"])["emb"].float()
+                    sims = (emb @ self.db_emb.T).cpu().numpy()
+                    lp = lp + cell_log_prior(sims, self.db_pos, self.data.ext, self.cfg["coarse"]["cell"],
+                                             self.cfg["retrieval"]["tau"])[0]
+                    lp -= np.logaddexp.reduce(lp)
+                self.timing["networks_ms"] += 1000 * (time.perf_counter() - t0)
+                lps[t], ws[t] = lp, w[0]
+                continue
             t0 = time.perf_counter()
             logits, w = self.cls.run(None, feed)
             lp = (logits[0] - np.logaddexp.reduce(logits[0])) if prior != "none" else np.full(C, -np.log(C))
@@ -293,7 +350,7 @@ def main():
     ap.add_argument("--tag", default=None)
     ap.add_argument("--outdir", default="phase2", help="folder under runs/ for the outputs")
     ap.add_argument("--set", nargs="*", default=[])
-    ap.add_argument("--backend", default="torch", choices=["torch", "onnx"],
+    ap.add_argument("--backend", default="torch", choices=["torch", "onnx", "trt"],
                     help="onnx: run the networks one frame at a time with ONNX Runtime on CPU (edge timing)")
     ap.add_argument("--int8", action="store_true", help="with --backend onnx: INT8-quantised networks")
     a = ap.parse_args()
@@ -324,7 +381,7 @@ def main():
     tercom = ProfileMatcher(data, cfg)
     tercom.calibrate(HeldOutSet(data, "val", year).w)
     dsmac = ImageMatcher(data, cfg, year, dev=str(dev))
-    edge = EdgeNets(a, data, cfg) if a.backend == "onnx" else None
+    edge = EdgeNets(a, data, cfg) if a.backend in ("onnx", "trt") else None
     retriever = Retriever(a.retrieval, data, cfg, dev=str(dev)) if a.retrieval and edge is None else None
     centers, _ = cell_centers(data.ext, cfg["coarse"]["cell"])
     use = {"vision": not a.no_image, "mag": not a.no_mag, "grav": not a.no_grav}

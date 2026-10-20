@@ -37,10 +37,11 @@ class ClassHead(nn.Module):
 
     def forward(self, z):
         logits = self.net(z).float()
+        centers = self.centers.float()                  # the buffer is half in an FP16 export
         p = logits.softmax(-1)
-        mean = p @ self.centers
-        var = (p * ((self.centers[None] - mean[:, None]) ** 2).sum(-1)).sum(-1) / 2
-        return self.centers[logits.argmax(-1)], torch.log(var.clamp(min=1e-8)), logits
+        mean = p @ centers
+        var = (p * ((centers[None] - mean[:, None]) ** 2).sum(-1)).sum(-1) / 2
+        return centers[logits.argmax(-1)], torch.log(var.clamp(min=1e-8)), logits
 
 
 class Localizer(nn.Module):
@@ -72,13 +73,14 @@ class Localizer(nn.Module):
         img = batch.get("img")
         B = batch["avail"].shape[0]
         dev = batch["avail"].device
-        mu = torch.zeros(B, len(MODALITIES), self.dim, device=dev)
+        dt = next(self.udml.parameters()).dtype          # float32 in training, float16 in an FP16 export
+        mu = torch.zeros(B, len(MODALITIES), self.dim, device=dev, dtype=dt)
         logvar = torch.zeros_like(mu)
         inputs = {"vision": img, "mag": batch.get("mag"), "grav": batch.get("grav")}
         for k, name in enumerate(MODALITIES):
             if name in self.enc:
                 m, lv = self.enc[name](inputs[name])
-                mu[:, k], logvar[:, k] = m.float(), lv.float()
+                mu[:, k], logvar[:, k] = m.to(dt), lv.to(dt)
         avail = batch["avail"]
         z, diag = self.udml(mu, logvar, avail, sample=self.training)
         K = len(MODALITIES)

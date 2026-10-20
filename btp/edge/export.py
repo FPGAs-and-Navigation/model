@@ -26,7 +26,7 @@ class ClassifierWrapper(nn.Module):
         self.m = m
 
     def forward(self, img, mag, grav):
-        avail = torch.ones(img.shape[0], 3, dtype=torch.bool)
+        avail = torch.ones(img.shape[0], 3, dtype=torch.bool, device=img.device)
         out = self.m(dict(img=img, mag=mag, grav=grav, avail=avail))
         return out["logits"], out["w"]
 
